@@ -12,14 +12,14 @@ export interface NovaCssCompileOptions {
 }
 
 export interface NovaCssCompileResult extends NovaUiStyleSheetAsset {
-  imports: string[]
+  imports: Array<string>
   flattenedSource: string
 }
 
 /** Компилирует `.novacss` в precompiled Nova stylesheet asset. */
 export function compileNovaCss(source: string, options: NovaCssCompileOptions = {}): NovaCssCompileResult {
-  const imports: string[] = []
-  const diagnostics: NovaUiStyleDiagnostic[] = []
+  const imports: Array<string> = []
+  const diagnostics: Array<NovaUiStyleDiagnostic> = []
   const flattenedSource = resolveImports(source, options, imports, diagnostics)
   const scopedSource = options.scopeId ? scopeNovaCss(flattenedSource, options.scopeId) : flattenedSource
   const validation = validateNovaUiStyleSheetSource(scopedSource)
@@ -55,8 +55,8 @@ export function serializeStyleAsset(asset: NovaUiStyleSheetAsset): string {
 function resolveImports(
   source: string,
   options: NovaCssCompileOptions,
-  imports: string[],
-  diagnostics: NovaUiStyleDiagnostic[],
+  imports: Array<string>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
   seen = new Set<string>(),
 ): string {
   return source.replace(/@import\s+(?:url\()?["']([^"']+)["']\)?\s*;/g, (_raw, request: string) => {

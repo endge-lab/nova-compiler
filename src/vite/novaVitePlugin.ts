@@ -14,7 +14,14 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     name: 'endge-nova-compiler',
     enforce: 'pre',
     transform(source, id) {
-      const pluginContext = this
+      const resolveCssImport = (request: string, from: string | undefined): string | null => {
+        const baseDir = from ? path.dirname(from) : process.cwd()
+        const resolved = path.resolve(baseDir, request)
+        if (!fs.existsSync(resolved)) return null
+        this.addWatchFile(resolved)
+        return fs.readFileSync(resolved, 'utf8')
+      }
+
       if (id.endsWith('.novacss')) {
         const result = compileNovaCss(source, {
           filename: id,
@@ -42,14 +49,6 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       }
 
       return null
-
-      function resolveCssImport(request: string, from: string | undefined): string | null {
-        const baseDir = from ? path.dirname(from) : process.cwd()
-        const resolved = path.resolve(baseDir, request)
-        if (!fs.existsSync(resolved)) return null
-        pluginContext.addWatchFile(resolved)
-        return fs.readFileSync(resolved, 'utf8')
-      }
     },
   }
 }

@@ -53,7 +53,7 @@ const STYLE_COMPLETIONS = [
 export function getNovaLanguageDiagnostics(
   source: string,
   filename: string,
-): NovaLanguageDiagnostic[] {
+): Array<NovaLanguageDiagnostic> {
   const result = filename.endsWith('.novacss')
     ? compileNovaCss(source, { filename })
     : compileNovaSfc(source, { filename })
@@ -62,7 +62,7 @@ export function getNovaLanguageDiagnostics(
 }
 
 /** Возвращает базовые completions для JetBrains/LSP слоя. */
-export function getNovaLanguageCompletions(filename: string): NovaCompletionItem[] {
+export function getNovaLanguageCompletions(filename: string): Array<NovaCompletionItem> {
   if (filename.endsWith('.novacss')) {
     return STYLE_COMPLETIONS.map(label => ({ label, kind: 'style' }))
   }

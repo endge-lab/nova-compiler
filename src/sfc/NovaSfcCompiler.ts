@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/NovaCssCompiler'
 import type { NovaUiStyleDiagnostic } from '@endge/nova-ui-kit'
+import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/NovaCssCompiler'
 
 export interface NovaSfcCompileOptions extends NovaCssCompileOptions {
   filename?: string
@@ -9,7 +9,7 @@ export interface NovaSfcCompileOptions extends NovaCssCompileOptions {
 
 export interface NovaSfcCompileResult {
   code: string
-  diagnostics: NovaUiStyleDiagnostic[]
+  diagnostics: Array<NovaUiStyleDiagnostic>
   scopeId: string
 }
 
@@ -22,7 +22,7 @@ interface SfcBlock {
 interface TemplateNode {
   tag: string
   attrs: Record<string, string | true>
-  children: TemplateNode[]
+  children: Array<TemplateNode>
 }
 
 const UI_KIT_TAGS = new Set([
@@ -49,7 +49,7 @@ const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', '
 /** Компилирует `.nova` SFC в TypeScript module с generated NovaNode class. */
 export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = {}): NovaSfcCompileResult {
   const blocks = parseSfcBlocks(source)
-  const diagnostics: NovaUiStyleDiagnostic[] = []
+  const diagnostics: Array<NovaUiStyleDiagnostic> = []
   const template = blocks.find(block => block.type === 'template')
   const script = blocks.find(block => block.type === 'script')
   const styles = blocks.filter(block => block.type === 'style')
@@ -96,8 +96,8 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
   }
 }
 
-function parseSfcBlocks(source: string): SfcBlock[] {
-  const blocks: SfcBlock[] = []
+function parseSfcBlocks(source: string): Array<SfcBlock> {
+  const blocks: Array<SfcBlock> = []
   const pattern = /<(template|script|style)\b([^>]*)>([\s\S]*?)<\/\1>/g
   let match: RegExpExecArray | null
 
@@ -113,7 +113,7 @@ function parseSfcBlocks(source: string): SfcBlock[] {
 }
 
 function compileSfcStyles(
-  styles: SfcBlock[],
+  styles: Array<SfcBlock>,
   scopeId: string,
   options: NovaSfcCompileOptions,
 ) {
@@ -131,7 +131,7 @@ function compileSfcStyles(
   })
 }
 
-function parseTemplate(source: string, diagnostics: NovaUiStyleDiagnostic[]): TemplateNode[] {
+function parseTemplate(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): Array<TemplateNode> {
   const root: TemplateNode = { tag: 'root', attrs: {}, children: [] }
   const stack = [root]
   const tagPattern = /<\/?([\w.-]+)([^>]*)>/g
@@ -165,7 +165,7 @@ function parseTemplate(source: string, diagnostics: NovaUiStyleDiagnostic[]): Te
   return root.children
 }
 
-function validateTemplateNodes(nodes: TemplateNode[], diagnostics: NovaUiStyleDiagnostic[]): void {
+function validateTemplateNodes(nodes: Array<TemplateNode>, diagnostics: Array<NovaUiStyleDiagnostic>): void {
   let previousAcceptsElse = false
 
   for (const node of nodes) {
@@ -207,7 +207,7 @@ function parseAttrs(source: string): Record<string, string | true> {
   return attrs
 }
 
-function compileScriptSetup(source: string): { body: string; names: string[] } {
+function compileScriptSetup(source: string): { body: string; names: Array<string> } {
   const transformed = source
     .replace(/defineProps\s*<[^>]+>\s*\(\s*\)/g, '__props')
     .replace(/defineProps\s*\([^)]*\)/g, '__props')
@@ -224,8 +224,8 @@ function compileScriptSetup(source: string): { body: string; names: string[] } {
   }
 }
 
-function generateNodeSequence(nodes: TemplateNode[], scoped: boolean): string {
-  const chunks: string[] = []
+function generateNodeSequence(nodes: Array<TemplateNode>, scoped: boolean): string {
+  const chunks: Array<string> = []
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]
@@ -277,7 +277,7 @@ function generateNodeList(node: TemplateNode, scoped: boolean): string {
 }
 
 function generateSchema(node: TemplateNode, fromFor = false, scoped = false): string {
-  const type = UI_KIT_TAGS.has(node.tag) ? `NovaUiKit.${node.tag}` : JSON.stringify(node.tag)
+  const type = UI_KIT_TAGS.has(node.tag) ? `NovaUIKit.${node.tag}` : JSON.stringify(node.tag)
   const props = generateProps(node, scoped)
   const events = generateEvents(node)
   const children = node.children.length > 0 ? generateNodeSequence(node.children, scoped) : ''
@@ -296,7 +296,7 @@ function generateSchema(node: TemplateNode, fromFor = false, scoped = false): st
 }
 
 function generateProps(node: TemplateNode, scoped: boolean): string {
-  const props: string[] = []
+  const props: Array<string> = []
   const staticClass = readAttr(node, 'class')
   const dynamicClass = readAttr(node, ':class')
   const attrs = readAttr(node, ':attrs') ?? readAttr(node, 'attrs')
@@ -341,7 +341,7 @@ function generateProps(node: TemplateNode, scoped: boolean): string {
 }
 
 function generateEvents(node: TemplateNode): string {
-  const events: string[] = []
+  const events: Array<string> = []
   for (const [name, value] of Object.entries(node.attrs)) {
     if (!name.startsWith('@')) continue
     const eventName = name.slice(1)
@@ -385,7 +385,7 @@ function quoteKey(key: string): string {
 
 function generateModule(options: {
   className: string
-  setup: { body: string; names: string[] }
+  setup: { body: string; names: Array<string> }
   templateCode: string
   styleAssetCode: string
 }): string {
@@ -405,7 +405,7 @@ function generateModule(options: {
   ].join('\n')
 
   return `import { NovaNode, NovaTemplateRuntime } from '@endge/nova';
-import { NovaUiKit } from '@endge/nova-ui-kit';
+import { NovaUIKit } from '@endge/nova-ui-kit';
 
 const __novaSfcStyle = ${options.styleAssetCode};
 const ref = value => ({ value });
