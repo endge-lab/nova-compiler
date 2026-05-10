@@ -11,7 +11,13 @@ describe('Nova SFC compiler', () => {
 
       <template>
         <Root id="root" class="demo">
-          <Button v-for="item in props.items" :key="item.id" :text="item.title" @press="save" />
+          <Button
+            v-for="item in props.items"
+            :key="item.id"
+            :layout="{ width: '100%', height: 32 }"
+            :text="item.title"
+            @press="save"
+          />
         </Root>
       </template>
 
@@ -26,6 +32,7 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('export default class NovaDemo extends NovaNode')
     expect(result.code).toContain('new NovaTemplateRuntime(this)')
     expect(result.code).toContain('props.items')
+    expect(result.code).toContain("layout:{ width: '100%', height: 32 }")
     expect(result.code).not.toContain('const props = this.props;')
     expect(result.code).toContain('const props = this.setupState.props;')
     expect(result.code).toContain('novaScopeId')

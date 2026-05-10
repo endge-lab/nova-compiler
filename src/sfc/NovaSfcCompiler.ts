@@ -283,11 +283,13 @@ function generateSchema(node: TemplateNode, fromFor = false, scoped = false): st
   const children = node.children.length > 0 ? generateNodeSequence(node.children, scoped) : ''
   const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
   const context = readAttr(node, ':context')
+  const layout = readAttr(node, ':layout') ?? readAttr(node, 'layout')
   const fields = [
     `type:${type}`,
     readAttr(node, 'id') ? `id:${JSON.stringify(readAttr(node, 'id'))}` : '',
     key ? `key:${key}` : '',
     context ? `context:${context}` : '',
+    layout ? `layout:${layout}` : '',
     props ? `props:${props}` : '',
     events ? `events:${events}` : '',
     children ? `children:${children}` : '',
@@ -318,6 +320,8 @@ function generateProps(node: TemplateNode, scoped: boolean): string {
       || name === 'attrs'
       || name === ':attrs'
       || name === ':context'
+      || name === 'layout'
+      || name === ':layout'
       || name.startsWith('v-')
       || name.startsWith('@')
     ) continue
@@ -483,6 +487,7 @@ function createScopeId(input: string): string {
 
 function createClassName(filename?: string): string {
   const base = filename?.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? 'NovaSfcComponent'
-  const normalized = base.replace(/(^|[-_\s]+)([a-zA-Z0-9])/g, (_match, _prefix, char: string) => char.toUpperCase())
+  const safeBase = base.replace(/[^A-Za-z0-9_$]+/g, ' ')
+  const normalized = safeBase.replace(/(^|[-_\s]+)([a-zA-Z0-9_$])/g, (_match, _prefix, char: string) => char.toUpperCase())
   return /^[A-Za-z_$]/.test(normalized) ? normalized : `Nova${normalized}`
 }
