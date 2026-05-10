@@ -75,12 +75,14 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     }
   }
 
+  const scoped = styles.some(block => Object.prototype.hasOwnProperty.call(block.attrs, 'scoped'))
   const styleAsset = compileSfcStyles(styles, scopeId, options)
   diagnostics.push(...styleAsset.diagnostics)
 
   const templateNodes = template ? parseTemplate(template.content, diagnostics) : []
+  validateTemplateNodes(templateNodes, diagnostics)
   const setup = compileScriptSetup(script?.content ?? '')
-  const templateCode = `[${templateNodes.map(node => generateNodeList(node)).join(',')}].flat()`
+  const templateCode = generateNodeSequence(templateNodes, scoped)
 
   return {
     code: generateModule({
@@ -163,6 +165,36 @@ function parseTemplate(source: string, diagnostics: NovaUiStyleDiagnostic[]): Te
   return root.children
 }
 
+function validateTemplateNodes(nodes: TemplateNode[], diagnostics: NovaUiStyleDiagnostic[]): void {
+  let previousAcceptsElse = false
+
+  for (const node of nodes) {
+    if (
+      readAttr(node, 'v-for')
+      && !readAttr(node, ':key')
+      && !readAttr(node, 'key')
+    ) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'missing-key',
+        message: `v-for на <${node.tag}> должен содержать обязательный :key.`,
+      })
+    }
+
+    const isElseBranch = !!readAttr(node, 'v-else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'v-else')
+    if (isElseBranch && !previousAcceptsElse) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'orphan-else',
+        message: `v-else/v-else-if на <${node.tag}> должен идти после v-if.`,
+      })
+    }
+
+    validateTemplateNodes(node.children, diagnostics)
+    previousAcceptsElse = !!readAttr(node, 'v-if') || !!readAttr(node, 'v-else-if')
+  }
+}
+
 function parseAttrs(source: string): Record<string, string | true> {
   const attrs: Record<string, string | true> = {}
   const pattern = /([:@.\w-]+)(?:=(?:"([^"]*)"|'([^']*)'))?/g
@@ -192,27 +224,63 @@ function compileScriptSetup(source: string): { body: string; names: string[] } {
   }
 }
 
-function generateNodeList(node: TemplateNode): string {
+function generateNodeSequence(nodes: TemplateNode[], scoped: boolean): string {
+  const chunks: string[] = []
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index]
+    if (readAttr(node, 'v-else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'v-else')) continue
+
+    const condition = readAttr(node, 'v-if')
+    if (!condition) {
+      chunks.push(generateNodeList(node, scoped))
+      continue
+    }
+
+    let branch = `(${condition}) ? [${generateSchema(node, false, scoped)}]`
+    let fallback = '[]'
+    let cursor = index + 1
+    while (cursor < nodes.length) {
+      const next = nodes[cursor]
+      const elseIf = readAttr(next, 'v-else-if')
+      const hasElse = Object.prototype.hasOwnProperty.call(next.attrs, 'v-else')
+      if (!elseIf && !hasElse) break
+
+      if (elseIf) {
+        branch += ` : (${elseIf}) ? [${generateSchema(next, false, scoped)}]`
+      } else {
+        fallback = `[${generateSchema(next, false, scoped)}]`
+        cursor += 1
+        break
+      }
+      cursor += 1
+    }
+
+    chunks.push(`${branch} : ${fallback}`)
+    index = cursor - 1
+  }
+
+  return `[${chunks.join(',')}].flat().filter(Boolean)`
+}
+
+function generateNodeList(node: TemplateNode, scoped: boolean): string {
   const forSource = readAttr(node, 'v-for')
   if (forSource) {
     const parsed = parseForExpression(forSource)
     if (parsed) {
-      const schema = generateSchema(node, true)
+      const schema = generateSchema(node, true, scoped)
       return `(${parsed.source} ?? []).flatMap((${parsed.item}, ${parsed.index}) => [${schema}])`
     }
   }
 
-  const condition = readAttr(node, 'v-if')
-  if (condition) return `(${condition}) ? [${generateSchema(node)}] : []`
-
-  return generateSchema(node)
+  return generateSchema(node, false, scoped)
 }
 
-function generateSchema(node: TemplateNode, fromFor = false): string {
+function generateSchema(node: TemplateNode, fromFor = false, scoped = false): string {
   const type = UI_KIT_TAGS.has(node.tag) ? `NovaUiKit.${node.tag}` : JSON.stringify(node.tag)
-  const props = generateProps(node)
+  const props = generateProps(node, scoped)
   const events = generateEvents(node)
-  const children = node.children.map(child => generateNodeList(child)).join(',')
+  const children = node.children.length > 0 ? generateNodeSequence(node.children, scoped) : ''
   const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
   const context = readAttr(node, ':context')
   const fields = [
@@ -222,12 +290,12 @@ function generateSchema(node: TemplateNode, fromFor = false): string {
     context ? `context:${context}` : '',
     props ? `props:${props}` : '',
     events ? `events:${events}` : '',
-    children ? `children:[${children}].flat().filter(Boolean)` : '',
+    children ? `children:${children}` : '',
   ].filter(Boolean)
   return `{${fields.join(',')}}`
 }
 
-function generateProps(node: TemplateNode): string {
+function generateProps(node: TemplateNode, scoped: boolean): string {
   const props: string[] = []
   const staticClass = readAttr(node, 'class')
   const dynamicClass = readAttr(node, ':class')
@@ -236,7 +304,9 @@ function generateProps(node: TemplateNode): string {
   if (staticClass || dynamicClass) {
     props.push(`className:[${staticClass ? JSON.stringify(staticClass) : 'null'}, ${dynamicClass ?? 'null'}].filter(Boolean).join(' ')`)
   }
-  if (attrs) props.push(`attrs:${attrs}`)
+  if (attrs && scoped) props.push(`attrs:{...(${attrs}), __novaScope: __novaSfcStyle.scopeId}`)
+  else if (attrs) props.push(`attrs:${attrs}`)
+  else if (scoped) props.push('attrs:{__novaScope: __novaSfcStyle.scopeId}')
 
   for (const [name, value] of Object.entries(node.attrs)) {
     if (
@@ -319,9 +389,20 @@ function generateModule(options: {
   templateCode: string
   styleAssetCode: string
 }): string {
-  const destructured = options.setup.names.length > 0
-    ? `const { ${options.setup.names.join(', ')} } = this.setupState`
-    : ''
+  const setupNames = new Set(options.setup.names)
+  const implicitTemplateLocals = [
+    ['props', 'this.props'],
+    ['emit', 'this.emit.bind(this)'],
+    ['width', 'this.width'],
+    ['height', 'this.height'],
+    ['styleSheet', '__novaSfcStyle'],
+  ] as const
+  const templateLocalDeclarations = [
+    ...implicitTemplateLocals
+      .filter(([name]) => !setupNames.has(name))
+      .map(([name, value]) => `const ${name} = ${value};`),
+    ...options.setup.names.map(name => `const ${name} = this.setupState.${name};`),
+  ].join('\n')
 
   return `import { NovaNode, NovaTemplateRuntime } from '@endge/nova';
 import { NovaUiKit } from '@endge/nova-ui-kit';
@@ -379,12 +460,7 @@ ${indent(options.setup.body, 4)}
   }
 
   createTemplate() {
-    const props = this.props;
-    const emit = this.emit.bind(this);
-    const width = this.width;
-    const height = this.height;
-    const styleSheet = __novaSfcStyle;
-${destructured ? `    ${destructured};` : ''}
+${indent(templateLocalDeclarations, 4)}
     return ${options.templateCode};
   }
 

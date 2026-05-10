@@ -59,7 +59,7 @@ function resolveImports(
   diagnostics: NovaUiStyleDiagnostic[],
   seen = new Set<string>(),
 ): string {
-  return source.replace(/@import\s+(?:url\()?["']([^"']+)["']\)?\s*;/g, (raw, request: string) => {
+  return source.replace(/@import\s+(?:url\()?["']([^"']+)["']\)?\s*;/g, (_raw, request: string) => {
     imports.push(request)
     const resolved = options.resolveImport?.(request, options.filename)
     if (!resolved) {
@@ -80,7 +80,7 @@ function resolveImports(
 }
 
 function scopeNovaCss(source: string, scopeId: string): string {
-  return source.replace(/([^{}@]+)\{/g, (raw, selectorSource: string) => {
+  return source.replace(/([^{}@]+)\{/g, (_raw, selectorSource: string) => {
     const selectors = selectorSource
       .split(',')
       .map(selector => selector.trim())
