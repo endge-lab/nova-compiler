@@ -5,6 +5,9 @@ import dts from 'vite-plugin-dts'
 const externalPackages = [
   '@endge/nova',
   '@endge/nova-ui-kit',
+  '@babel/parser',
+  '@vue/compiler-dom',
+  '@vue/compiler-sfc',
   'node:fs',
   'node:path',
   'node:crypto',

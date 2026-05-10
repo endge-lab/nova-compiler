@@ -66,4 +66,74 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('(props.ready) ?')
     expect(result.code).toContain('(props.pending) ?')
   })
+
+  it('compiles imported nova components and Component src includes', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import TimelineChart from './TimelineChart.nova'
+      const props = defineProps()
+      const emit = defineEmits()
+      </script>
+
+      <template>
+        <Root>
+          <TimelineChart :options="props.options" @select="emit('select', args[0])" />
+          <Component src="./Legend.nova" :items="props.items" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/Workbench.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain("import TimelineChart from './TimelineChart.nova'")
+    expect(result.code).toContain('import __NovaComponent0 from "./Legend.nova"')
+    expect(result.code).toContain('type:TimelineChart')
+    expect(result.code).toContain('type:__NovaComponent0')
+    expect(result.code).toContain('select:(...args) => (emit')
+  })
+
+  it('reports dynamic Component src and children on compiled components', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import TimelineChart from './TimelineChart.nova'
+      </script>
+
+      <template>
+        <Root>
+          <Component :src="props.src" />
+          <TimelineChart><TextBlock text="slot" /></TimelineChart>
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics.some(item => item.code === 'dynamic-component-src')).toBe(true)
+    expect(result.diagnostics.some(item => item.code === 'compiled-component-children')).toBe(true)
+  })
+
+  it('splits scoped and global style assets', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root class="local">
+          <TextBlock class="global" text="demo" />
+        </Root>
+      </template>
+
+      <style scoped>
+      Root.local { background: #ffffff; }
+      </style>
+
+      <style>
+      TextBlock.global { color: #111111; }
+      </style>
+    `, {
+      filename: '/demo/Styles.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('__novaSfcGlobalStyles = [__novaSfcGlobalStyle]')
+    expect(result.code).toContain('registerNovaUiGlobalStyleSheet')
+    expect(result.code).toContain('__novaScope: __novaSfcStyle.scopeId')
+    expect(result.code).toContain('styleSheet:__novaSfcStyle')
+  })
 })

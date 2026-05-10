@@ -49,7 +49,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(fs.readFileSync(cssOutput, 'utf8')).toContain('const asset =')
   })
 
-  it('writes inline nova-template generated files without replacing the Vue transform', async () => {
+  it('transforms inline nova-template into a virtual module import', async () => {
     const outputDir = createTempDir()
     const plugin = novaVitePlugin({
       generatedOutput: {
@@ -64,10 +64,37 @@ describe('Nova Vite plugin generated debug output', () => {
       sourcePath('src/pages/Page.vue'),
     )
 
+    expect(result).toMatchObject({
+      map: null,
+    })
+    const code = (result as { code: string }).code
+    expect(code).toContain('import __NovaTemplate0')
+    expect(code).toContain(':component="__NovaTemplate0"')
+
+    const virtualId = code.match(/from "([^"]+\?nova-template=0)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+    await runLoad(plugin, virtualId!)
+
     const inlineOutput = path.join(outputDir, 'src/pages/Page.vue__nova_template_0.nova.ts')
 
-    expect(result).toBeNull()
     expect(fs.readFileSync(inlineOutput, 'utf8')).toContain('export default class PageVueNovaTemplate0 extends NovaNode')
+  })
+
+  it('transforms nova-template src into a static component import and keeps attrs', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><NovaCanvas><nova-template src="@/demo/Chart.nova" :options="options" @select="onSelect"><Root /></nova-template></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('import __NovaTemplate0 from "@/demo/Chart.nova"')
+    expect(code).toContain('source="@/demo/Chart.nova"')
+    expect(code).toContain(':options="options"')
+    expect(code).toContain('@select="onSelect"')
+    expect(code).not.toContain('<Root />')
   })
 })
 
@@ -82,6 +109,19 @@ async function runTransform(plugin: Plugin, source: string, id: string): Promise
   }
 
   return await transform?.handler.call(context as never, source, id)
+}
+
+async function runLoad(plugin: Plugin, id: string): Promise<unknown> {
+  const load = plugin.load
+  const context = {
+    addWatchFile() {},
+  }
+
+  if (typeof load === 'function') {
+    return await load.call(context as never, id)
+  }
+
+  return await load?.handler.call(context as never, id)
 }
 
 function createTempDir(): string {

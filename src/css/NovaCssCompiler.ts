@@ -8,7 +8,10 @@ import {
 export interface NovaCssCompileOptions {
   filename?: string
   scopeId?: string
-  resolveImport?: (request: string, from: string | undefined) => string | null | undefined
+  resolveImport?: (
+    request: string,
+    from: string | undefined,
+  ) => string | { source: string; filename?: string } | null | undefined
 }
 
 export interface NovaCssCompileResult extends NovaUiStyleSheetAsset {
@@ -75,7 +78,10 @@ function resolveImports(
     if (seen.has(key)) return ''
     seen.add(key)
 
-    return resolveImports(resolved, { ...options, filename: request }, imports, diagnostics, seen)
+    const importedSource = typeof resolved === 'string' ? resolved : resolved.source
+    const importedFilename = typeof resolved === 'string' ? request : resolved.filename ?? request
+
+    return resolveImports(importedSource, { ...options, filename: importedFilename }, imports, diagnostics, seen)
   })
 }
 

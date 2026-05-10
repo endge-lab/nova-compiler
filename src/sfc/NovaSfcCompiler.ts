@@ -1,4 +1,15 @@
 import { createHash } from 'node:crypto'
+import { parse as parseScript } from '@babel/parser'
+import {
+  baseParse,
+  ElementTypes,
+  NodeTypes,
+  type AttributeNode,
+  type DirectiveNode,
+  type ElementNode,
+  type TemplateChildNode,
+} from '@vue/compiler-dom'
+import { parse as parseSfc, type SFCStyleBlock } from '@vue/compiler-sfc'
 import type { NovaUiStyleDiagnostic } from '@endge/nova-ui-kit'
 import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/NovaCssCompiler'
 
@@ -11,18 +22,37 @@ export interface NovaSfcCompileResult {
   code: string
   diagnostics: Array<NovaUiStyleDiagnostic>
   scopeId: string
-}
-
-interface SfcBlock {
-  type: 'template' | 'script' | 'style'
-  attrs: Record<string, string | true>
-  content: string
+  dependencies: Array<string>
 }
 
 interface TemplateNode {
   tag: string
   attrs: Record<string, string | true>
   children: Array<TemplateNode>
+}
+
+interface ScriptSetupCompileResult {
+  imports: Array<string>
+  body: string
+  names: Array<string>
+  importedComponents: Set<string>
+  topLevelNames: Set<string>
+}
+
+interface StyleCompileResult {
+  scopedStyleAssetCode: string
+  globalStyleAssetCode: string
+  hasScopedStyles: boolean
+  hasGlobalStyles: boolean
+  diagnostics: Array<NovaUiStyleDiagnostic>
+}
+
+interface GenerateContext {
+  diagnostics: Array<NovaUiStyleDiagnostic>
+  importedComponents: Set<string>
+  generatedImports: Array<string>
+  componentImports: Map<string, string>
+  hasScopedStyles: boolean
 }
 
 const UI_KIT_TAGS = new Set([
@@ -48,136 +78,398 @@ const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', '
 
 /** Компилирует `.nova` SFC в TypeScript module с generated NovaNode class. */
 export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = {}): NovaSfcCompileResult {
-  const blocks = parseSfcBlocks(source)
+  const filename = options.filename
   const diagnostics: Array<NovaUiStyleDiagnostic> = []
-  const template = blocks.find(block => block.type === 'template')
-  const script = blocks.find(block => block.type === 'script')
-  const styles = blocks.filter(block => block.type === 'style')
-  const scopeId = createScopeId(options.filename ?? source)
-  const className = options.className ?? createClassName(options.filename)
+  const sfc = parseSfc(source, { filename })
+  const scopeId = createScopeId(filename ?? source)
+  const className = options.className ?? createClassName(filename)
 
-  if (!template) {
+  for (const error of sfc.errors) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'sfc-parse-error',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  if (!sfc.descriptor.template) {
     diagnostics.push({
       severity: 'error',
       code: 'missing-template',
       message: 'Файл .nova должен содержать <template>.',
     })
   }
-
-  const duplicateTypes = ['template', 'script'] as const
-  for (const type of duplicateTypes) {
-    if (blocks.filter(block => block.type === type).length > 1) {
-      diagnostics.push({
-        severity: 'error',
-        code: `duplicate-${type}`,
-        message: `Файл .nova содержит несколько <${type}> блоков.`,
-      })
-    }
+  if (sfc.descriptor.script) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'unsupported-script',
+      message: 'Файл .nova поддерживает только <script setup>.',
+    })
   }
 
-  const scoped = styles.some(block => Object.prototype.hasOwnProperty.call(block.attrs, 'scoped'))
-  const styleAsset = compileSfcStyles(styles, scopeId, options)
-  diagnostics.push(...styleAsset.diagnostics)
+  const setup = compileScriptSetup(sfc.descriptor.scriptSetup?.content ?? '', diagnostics)
+  const styles = compileSfcStyles(sfc.descriptor.styles, scopeId, options)
+  diagnostics.push(...styles.diagnostics)
 
-  const templateNodes = template ? parseTemplate(template.content, diagnostics) : []
-  validateTemplateNodes(templateNodes, diagnostics)
-  const setup = compileScriptSetup(script?.content ?? '')
-  const templateCode = generateNodeSequence(templateNodes, scoped)
+  const templateNodes = sfc.descriptor.template
+    ? parseTemplate(sfc.descriptor.template.content, diagnostics)
+    : []
+  validateTemplateNodes(templateNodes, diagnostics, {
+    importedComponents: setup.importedComponents,
+    hasScopedStyles: styles.hasScopedStyles,
+  })
+
+  const context: GenerateContext = {
+    diagnostics,
+    importedComponents: setup.importedComponents,
+    generatedImports: [],
+    componentImports: new Map(),
+    hasScopedStyles: styles.hasScopedStyles,
+  }
+  const templateCode = generateNodeSequence(templateNodes, context)
 
   return {
     code: generateModule({
       className,
       setup,
       templateCode,
-      styleAssetCode: serializeStyleAsset(styleAsset),
+      scopeId,
+      scopedStyleAssetCode: styles.scopedStyleAssetCode,
+      globalStyleAssetCode: styles.globalStyleAssetCode,
+      hasScopedStyles: styles.hasScopedStyles,
+      hasGlobalStyles: styles.hasGlobalStyles,
+      generatedImports: context.generatedImports,
     }),
     diagnostics,
     scopeId,
+    dependencies: [...context.componentImports.keys()],
   }
-}
-
-function parseSfcBlocks(source: string): Array<SfcBlock> {
-  const blocks: Array<SfcBlock> = []
-  const pattern = /<(template|script|style)\b([^>]*)>([\s\S]*?)<\/\1>/g
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(source)) !== null) {
-    blocks.push({
-      type: match[1] as SfcBlock['type'],
-      attrs: parseAttrs(match[2]),
-      content: match[3].trim(),
-    })
-  }
-
-  return blocks
 }
 
 function compileSfcStyles(
-  styles: Array<SfcBlock>,
+  styles: Array<SFCStyleBlock>,
   scopeId: string,
   options: NovaSfcCompileOptions,
-) {
-  const source = styles.map(block => {
+): StyleCompileResult {
+  const scopedSource = joinStyleSources(styles.filter(block => block.scoped), options)
+  const globalSource = joinStyleSources(styles.filter(block => !block.scoped), options)
+  const hasScopedStyles = scopedSource.trim().length > 0
+  const hasGlobalStyles = globalSource.trim().length > 0
+  const scopedStyleAsset = compileNovaCss(scopedSource, {
+    ...options,
+    scopeId: hasScopedStyles ? scopeId : undefined,
+  })
+  const globalStyleAsset = compileNovaCss(globalSource, {
+    ...options,
+    scopeId: undefined,
+  })
+
+  return {
+    scopedStyleAssetCode: serializeStyleAsset(scopedStyleAsset),
+    globalStyleAssetCode: serializeStyleAsset(globalStyleAsset),
+    hasScopedStyles,
+    hasGlobalStyles,
+    diagnostics: [...scopedStyleAsset.diagnostics, ...globalStyleAsset.diagnostics],
+  }
+}
+
+function joinStyleSources(styles: Array<SFCStyleBlock>, options: NovaSfcCompileOptions): string {
+  return styles.map(block => {
     if (typeof block.attrs.src === 'string') {
       const imported = options.resolveImport?.(block.attrs.src, options.filename)
-      return imported ?? ''
+      if (!imported) return ''
+      return typeof imported === 'string' ? imported : imported.source
     }
     return block.content
   }).join('\n')
+}
 
-  return compileNovaCss(source, {
-    ...options,
-    scopeId,
-  })
+function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): ScriptSetupCompileResult {
+  const importRanges: Array<[number, number]> = []
+  const imports: Array<string> = []
+  const importedComponents = new Set<string>()
+  const topLevelNames = new Set<string>()
+
+  if (source.trim()) {
+    try {
+      const ast = parseScript(source, {
+        sourceType: 'module',
+        plugins: ['typescript'],
+      }) as any
+
+      for (const statement of ast.program.body as Array<any>) {
+        if (typeof statement.start === 'number' && typeof statement.end === 'number' && statement.type === 'ImportDeclaration') {
+          importRanges.push([statement.start, statement.end])
+          if (statement.importKind !== 'type') imports.push(source.slice(statement.start, statement.end))
+          if (String(statement.source.value).endsWith('.nova')) {
+            for (const specifier of statement.specifiers) {
+              importedComponents.add(specifier.local.name)
+              topLevelNames.add(specifier.local.name)
+            }
+          } else {
+            for (const specifier of statement.specifiers) topLevelNames.add(specifier.local.name)
+          }
+          continue
+        }
+
+        collectStatementNames(statement, topLevelNames)
+      }
+    } catch (error) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'script-parse-error',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  const bodyWithoutImports = removeRanges(source, importRanges)
+  const transformed = transformScriptSetupMacros(bodyWithoutImports)
+  const names = collectRuntimeSetupNames(transformed)
+  for (const name of names) topLevelNames.add(name)
+
+  return {
+    imports,
+    body: transformed.trim(),
+    names,
+    importedComponents,
+    topLevelNames,
+  }
+}
+
+function collectStatementNames(statement: any, target: Set<string>): void {
+  if (statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration') {
+    if (statement.id?.name) target.add(statement.id.name)
+    return
+  }
+
+  if (statement.type !== 'VariableDeclaration') return
+  for (const declaration of statement.declarations) collectPatternNames(declaration.id, target)
+}
+
+function collectPatternNames(pattern: any, target: Set<string>): void {
+  if (!pattern) return
+  if (pattern.type === 'Identifier') {
+    target.add(pattern.name)
+    return
+  }
+  if (pattern.type === 'ObjectPattern') {
+    for (const property of pattern.properties) {
+      if (property.type === 'ObjectProperty') collectPatternNames(property.value, target)
+      if (property.type === 'RestElement') collectPatternNames(property.argument, target)
+    }
+    return
+  }
+  if (pattern.type === 'ArrayPattern') {
+    for (const element of pattern.elements) collectPatternNames(element, target)
+  }
+}
+
+function collectRuntimeSetupNames(source: string): Array<string> {
+  const names = new Set<string>()
+  try {
+    const ast = parseScript(source, {
+      sourceType: 'module',
+      plugins: ['typescript'],
+      allowReturnOutsideFunction: true,
+    }) as any
+    for (const statement of ast.program.body as Array<any>) collectStatementNames(statement, names)
+  } catch {
+    for (const match of source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) names.add(match[1])
+    for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) names.add(match[1])
+  }
+  return [...names]
+}
+
+function transformScriptSetupMacros(source: string): string {
+  return source
+    .replace(/defineProps\s*<[^>]+>\s*\(\s*\)/g, '__props')
+    .replace(/defineProps\s*\([^)]*\)/g, '__props')
+    .replace(/defineEmits\s*<[^>]+>\s*\(\s*\)/g, '__emit')
+    .replace(/defineEmits\s*\([^)]*\)/g, '__emit')
+}
+
+function removeRanges(source: string, ranges: Array<[number, number]>): string {
+  if (ranges.length === 0) return source
+  let cursor = 0
+  let output = ''
+  for (const [start, end] of ranges.sort((left, right) => left[0] - right[0])) {
+    output += source.slice(cursor, start)
+    cursor = end
+  }
+  output += source.slice(cursor)
+  return output
 }
 
 function parseTemplate(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): Array<TemplateNode> {
-  const root: TemplateNode = { tag: 'root', attrs: {}, children: [] }
-  const stack = [root]
-  const tagPattern = /<\/?([\w.-]+)([^>]*)>/g
-  let match: RegExpExecArray | null
+  const root = baseParse(source)
+  return root.children.flatMap(child => convertTemplateChild(child, diagnostics)).filter(Boolean)
+}
 
-  while ((match = tagPattern.exec(source)) !== null) {
-    const raw = match[0]
-    const tag = match[1]
-    if (raw.startsWith('</')) {
-      if (stack.length > 1) stack.pop()
+function convertTemplateChild(
+  child: TemplateChildNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): Array<TemplateNode> {
+  if (child.type === NodeTypes.TEXT) {
+    if (child.content.trim()) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'unsupported-text-node',
+        message: 'Текстовые nodes в Nova template не поддерживаются. Используйте <TextBlock>.',
+      })
+    }
+    return []
+  }
+  if (child.type !== NodeTypes.ELEMENT) return []
+
+  const element = child as ElementNode
+  if (element.tagType === ElementTypes.SLOT || element.tagType === ElementTypes.TEMPLATE) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'unsupported-template-node',
+      message: `Nova template не поддерживает <${element.tag}>.`,
+    })
+    return []
+  }
+
+  return [{
+    tag: element.tag,
+    attrs: collectElementAttrs(element, diagnostics),
+    children: element.children.flatMap(nested => convertTemplateChild(nested, diagnostics)),
+  }]
+}
+
+function collectElementAttrs(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): Record<string, string | true> {
+  const attrs: Record<string, string | true> = {}
+  for (const prop of element.props) {
+    if (prop.type === NodeTypes.ATTRIBUTE) {
+      const attr = prop as AttributeNode
+      attrs[attr.name] = attr.value?.content ?? true
       continue
     }
 
-    if (!UI_KIT_TAGS.has(tag) && !PRIMITIVE_TAGS.has(tag) && !tag.includes('.')) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'unknown-tag',
-        message: `Неизвестный Nova tag "${tag}".`,
-      })
+    const directive = prop as DirectiveNode
+    const arg = directive.arg && directive.arg.type === NodeTypes.SIMPLE_EXPRESSION
+      ? directive.arg.content
+      : ''
+    const exp = directive.exp && directive.exp.type === NodeTypes.SIMPLE_EXPRESSION
+      ? directive.exp.content
+      : ''
+
+    if (directive.name === 'bind') {
+      if (!arg) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'unsupported-v-bind',
+          message: `v-bind object на <${element.tag}> пока не поддерживается.`,
+        })
+        continue
+      }
+      attrs[`:${arg}`] = exp || 'undefined'
+      continue
     }
 
-    const node: TemplateNode = {
-      tag,
-      attrs: parseAttrs(match[2]),
-      children: [],
+    if (directive.name === 'on') {
+      if (!arg) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'unsupported-v-on',
+          message: `v-on object на <${element.tag}> пока не поддерживается.`,
+        })
+        continue
+      }
+      attrs[`@${arg}`] = exp || true
+      continue
     }
-    stack[stack.length - 1].children.push(node)
-    if (!raw.endsWith('/>')) stack.push(node)
+
+    if (['if', 'else-if', 'else', 'for'].includes(directive.name)) {
+      attrs[`v-${directive.name}`] = exp || true
+      continue
+    }
+
+    diagnostics.push({
+      severity: 'error',
+      code: 'unsupported-directive',
+      message: `Директива v-${directive.name} на <${element.tag}> пока не поддерживается.`,
+    })
   }
-
-  return root.children
+  return attrs
 }
 
-function validateTemplateNodes(nodes: Array<TemplateNode>, diagnostics: Array<NovaUiStyleDiagnostic>): void {
+function validateTemplateNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: { importedComponents: Set<string>; hasScopedStyles: boolean },
+): void {
+  if (options.hasScopedStyles && (nodes.length !== 1 || nodes[0]?.tag !== 'Root')) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'scoped-style-root-required',
+      message: '<style scoped> требует единственный top-level <Root>, потому что style engine живет на Root.',
+    })
+  }
+
+  validateTemplateNodeList(nodes, diagnostics, options)
+}
+
+function validateTemplateNodeList(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: { importedComponents: Set<string> },
+): void {
   let previousAcceptsElse = false
 
   for (const node of nodes) {
-    if (
-      readAttr(node, 'v-for')
-      && !readAttr(node, ':key')
-      && !readAttr(node, 'key')
+    const isComponentInclude = node.tag === 'Component'
+    const isImportedComponent = options.importedComponents.has(node.tag)
+    const staticSrc = readAttr(node, 'src')
+
+    if (!UI_KIT_TAGS.has(node.tag)
+      && !PRIMITIVE_TAGS.has(node.tag)
+      && !node.tag.includes('.')
+      && !isComponentInclude
+      && !isImportedComponent
     ) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'unknown-tag',
+        message: `Неизвестный Nova tag "${node.tag}".`,
+      })
+    }
+
+    if (readAttr(node, 'v-for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
       diagnostics.push({
         severity: 'error',
         code: 'missing-key',
         message: `v-for на <${node.tag}> должен содержать обязательный :key.`,
+      })
+    }
+
+    if (isComponentInclude) {
+      if (readAttr(node, ':src')) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'dynamic-component-src',
+          message: '<Component> поддерживает только статический src. Динамический :src входит в async/lazy loading и не поддерживается в v1.',
+        })
+      }
+      if (!staticSrc) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'component-src-required',
+          message: '<Component> требует статический src.',
+        })
+      }
+    }
+
+    if ((isComponentInclude || isImportedComponent) && node.children.length > 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'compiled-component-children',
+        message: `<${node.tag}> пока не поддерживает children/slots.`,
       })
     }
 
@@ -190,41 +482,12 @@ function validateTemplateNodes(nodes: Array<TemplateNode>, diagnostics: Array<No
       })
     }
 
-    validateTemplateNodes(node.children, diagnostics)
+    validateTemplateNodeList(node.children, diagnostics, options)
     previousAcceptsElse = !!readAttr(node, 'v-if') || !!readAttr(node, 'v-else-if')
   }
 }
 
-function parseAttrs(source: string): Record<string, string | true> {
-  const attrs: Record<string, string | true> = {}
-  const pattern = /([:@.\w-]+)(?:=(?:"([^"]*)"|'([^']*)'))?/g
-  let match: RegExpExecArray | null
-
-  while ((match = pattern.exec(source)) !== null) {
-    attrs[match[1]] = match[2] ?? match[3] ?? true
-  }
-
-  return attrs
-}
-
-function compileScriptSetup(source: string): { body: string; names: Array<string> } {
-  const transformed = source
-    .replace(/defineProps\s*<[^>]+>\s*\(\s*\)/g, '__props')
-    .replace(/defineProps\s*\([^)]*\)/g, '__props')
-    .replace(/defineEmits\s*<[^>]+>\s*\(\s*\)/g, '__emit')
-    .replace(/defineEmits\s*\([^)]*\)/g, '__emit')
-
-  const names = new Set<string>()
-  for (const match of transformed.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) names.add(match[1])
-  for (const match of transformed.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) names.add(match[1])
-
-  return {
-    body: transformed,
-    names: [...names],
-  }
-}
-
-function generateNodeSequence(nodes: Array<TemplateNode>, scoped: boolean): string {
+function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
   const chunks: Array<string> = []
 
   for (let index = 0; index < nodes.length; index += 1) {
@@ -233,11 +496,11 @@ function generateNodeSequence(nodes: Array<TemplateNode>, scoped: boolean): stri
 
     const condition = readAttr(node, 'v-if')
     if (!condition) {
-      chunks.push(generateNodeList(node, scoped))
+      chunks.push(generateNodeList(node, context, index === 0))
       continue
     }
 
-    let branch = `(${condition}) ? [${generateSchema(node, false, scoped)}]`
+    let branch = `(${condition}) ? [${generateSchema(node, false, context, index === 0)}]`
     let fallback = '[]'
     let cursor = index + 1
     while (cursor < nodes.length) {
@@ -247,9 +510,9 @@ function generateNodeSequence(nodes: Array<TemplateNode>, scoped: boolean): stri
       if (!elseIf && !hasElse) break
 
       if (elseIf) {
-        branch += ` : (${elseIf}) ? [${generateSchema(next, false, scoped)}]`
+        branch += ` : (${elseIf}) ? [${generateSchema(next, false, context, cursor === 0)}]`
       } else {
-        fallback = `[${generateSchema(next, false, scoped)}]`
+        fallback = `[${generateSchema(next, false, context, cursor === 0)}]`
         cursor += 1
         break
       }
@@ -263,32 +526,38 @@ function generateNodeSequence(nodes: Array<TemplateNode>, scoped: boolean): stri
   return `[${chunks.join(',')}].flat().filter(Boolean)`
 }
 
-function generateNodeList(node: TemplateNode, scoped: boolean): string {
+function generateNodeList(node: TemplateNode, context: GenerateContext, isTopLevelRoot: boolean): string {
   const forSource = readAttr(node, 'v-for')
   if (forSource) {
     const parsed = parseForExpression(forSource)
     if (parsed) {
-      const schema = generateSchema(node, true, scoped)
+      const schema = generateSchema(node, true, context, isTopLevelRoot)
       return `(${parsed.source} ?? []).flatMap((${parsed.item}, ${parsed.index}) => [${schema}])`
     }
   }
 
-  return generateSchema(node, false, scoped)
+  return generateSchema(node, false, context, isTopLevelRoot)
 }
 
-function generateSchema(node: TemplateNode, fromFor = false, scoped = false): string {
-  const type = UI_KIT_TAGS.has(node.tag) ? `NovaUIKit.${node.tag}` : JSON.stringify(node.tag)
-  const props = generateProps(node, scoped)
-  const events = generateEvents(node)
-  const children = node.children.length > 0 ? generateNodeSequence(node.children, scoped) : ''
+function generateSchema(
+  node: TemplateNode,
+  fromFor: boolean,
+  context: GenerateContext,
+  isTopLevelRoot: boolean,
+): string {
+  const type = resolveNodeTypeExpression(node, context)
+  const isCompiledComponent = node.tag === 'Component' || context.importedComponents.has(node.tag)
+  const props = generateProps(node, context, isCompiledComponent, isTopLevelRoot)
+  const events = generateEvents(node, isCompiledComponent)
+  const children = node.children.length > 0 ? generateNodeSequence(node.children, context) : ''
   const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
-  const context = readAttr(node, ':context')
+  const contextSource = readAttr(node, ':context')
   const layout = readAttr(node, ':layout') ?? readAttr(node, 'layout')
   const fields = [
     `type:${type}`,
     readAttr(node, 'id') ? `id:${JSON.stringify(readAttr(node, 'id'))}` : '',
     key ? `key:${key}` : '',
-    context ? `context:${context}` : '',
+    contextSource ? `context:${contextSource}` : '',
     layout ? `layout:${layout}` : '',
     props ? `props:${props}` : '',
     events ? `events:${events}` : '',
@@ -297,18 +566,49 @@ function generateSchema(node: TemplateNode, fromFor = false, scoped = false): st
   return `{${fields.join(',')}}`
 }
 
-function generateProps(node: TemplateNode, scoped: boolean): string {
+function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext): string {
+  if (node.tag === 'Component') {
+    const src = readAttr(node, 'src')
+    if (!src) return 'undefined'
+    return resolveComponentImport(src, context)
+  }
+
+  if (context.importedComponents.has(node.tag)) return node.tag
+  if (UI_KIT_TAGS.has(node.tag)) return `__NovaUIKit.${node.tag}`
+  return JSON.stringify(node.tag)
+}
+
+function resolveComponentImport(src: string, context: GenerateContext): string {
+  const existing = context.componentImports.get(src)
+  if (existing) return existing
+
+  const name = `__NovaComponent${context.componentImports.size}`
+  context.componentImports.set(src, name)
+  context.generatedImports.push(`import ${name} from ${JSON.stringify(src)};`)
+  return name
+}
+
+function generateProps(
+  node: TemplateNode,
+  context: GenerateContext,
+  isCompiledComponent: boolean,
+  isTopLevelRoot: boolean,
+): string {
   const props: Array<string> = []
   const staticClass = readAttr(node, 'class')
   const dynamicClass = readAttr(node, ':class')
   const attrs = readAttr(node, ':attrs') ?? readAttr(node, 'attrs')
+  const hasExplicitStyleSheet = readAttr(node, ':styleSheet') || readAttr(node, 'styleSheet')
 
   if (staticClass || dynamicClass) {
     props.push(`className:[${staticClass ? JSON.stringify(staticClass) : 'null'}, ${dynamicClass ?? 'null'}].filter(Boolean).join(' ')`)
   }
-  if (attrs && scoped) props.push(`attrs:{...(${attrs}), __novaScope: __novaSfcStyle.scopeId}`)
+  if (attrs && context.hasScopedStyles) props.push(`attrs:{...(${attrs}), __novaScope: __novaSfcStyle.scopeId}`)
   else if (attrs) props.push(`attrs:${attrs}`)
-  else if (scoped) props.push('attrs:{__novaScope: __novaSfcStyle.scopeId}')
+  else if (context.hasScopedStyles && !isCompiledComponent) props.push('attrs:{__novaScope: __novaSfcStyle.scopeId}')
+  if (context.hasScopedStyles && isTopLevelRoot && node.tag === 'Root' && !hasExplicitStyleSheet) {
+    props.push('styleSheet:__novaSfcStyle')
+  }
 
   for (const [name, value] of Object.entries(node.attrs)) {
     if (
@@ -322,6 +622,8 @@ function generateProps(node: TemplateNode, scoped: boolean): string {
       || name === ':context'
       || name === 'layout'
       || name === ':layout'
+      || name === 'src'
+      || name === ':src'
       || name.startsWith('v-')
       || name.startsWith('@')
     ) continue
@@ -334,22 +636,24 @@ function generateProps(node: TemplateNode, scoped: boolean): string {
     props.push(`${quoteKey(name)}:${serializeStaticAttr(value)}`)
   }
 
-  for (const [name, value] of Object.entries(node.attrs)) {
-    if (!name.startsWith('@')) continue
-    const eventName = name.slice(1)
-    if (eventName === 'press') props.push(`onPress:${generateHandler(value)}`)
-    if (eventName === 'change') props.push(`onChange:${generateHandler(value)}`)
+  if (!isCompiledComponent) {
+    for (const [name, value] of Object.entries(node.attrs)) {
+      if (!name.startsWith('@')) continue
+      const eventName = name.slice(1)
+      if (eventName === 'press') props.push(`onPress:${generateHandler(value)}`)
+      if (eventName === 'change') props.push(`onChange:${generateHandler(value)}`)
+    }
   }
 
   return props.length > 0 ? `{${props.join(',')}}` : ''
 }
 
-function generateEvents(node: TemplateNode): string {
+function generateEvents(node: TemplateNode, isCompiledComponent: boolean): string {
   const events: Array<string> = []
   for (const [name, value] of Object.entries(node.attrs)) {
     if (!name.startsWith('@')) continue
     const eventName = name.slice(1)
-    if (eventName === 'press' || eventName === 'change') continue
+    if (!isCompiledComponent && (eventName === 'press' || eventName === 'change')) continue
     events.push(`${quoteKey(eventName)}:${generateHandler(value)}`)
   }
   return events.length > 0 ? `{${events.join(',')}}` : ''
@@ -389,11 +693,17 @@ function quoteKey(key: string): string {
 
 function generateModule(options: {
   className: string
-  setup: { body: string; names: Array<string> }
+  setup: ScriptSetupCompileResult
   templateCode: string
-  styleAssetCode: string
+  scopeId: string
+  scopedStyleAssetCode: string
+  globalStyleAssetCode: string
+  hasScopedStyles: boolean
+  hasGlobalStyles: boolean
+  generatedImports: Array<string>
 }): string {
   const setupNames = new Set(options.setup.names)
+  const topLevelNames = options.setup.topLevelNames
   const implicitTemplateLocals = [
     ['props', 'this.props'],
     ['emit', 'this.emit.bind(this)'],
@@ -401,28 +711,42 @@ function generateModule(options: {
     ['height', 'this.height'],
     ['styleSheet', '__novaSfcStyle'],
   ] as const
+  const runtimeHelpers = [
+    topLevelNames.has('ref') ? '' : 'const ref = value => ({ value });',
+    topLevelNames.has('computed') ? '' : 'const computed = fn => ({ get value() { return fn(); } });',
+    topLevelNames.has('watch') ? '' : 'const watch = () => () => {};',
+  ].filter(Boolean).join('\n')
   const templateLocalDeclarations = [
     ...implicitTemplateLocals
       .filter(([name]) => !setupNames.has(name))
       .map(([name, value]) => `const ${name} = ${value};`),
     ...options.setup.names.map(name => `const ${name} = this.setupState.${name};`),
   ].join('\n')
+  const setupReturn = options.setup.names.length > 0
+    ? `return { ${options.setup.names.join(', ')} };`
+    : 'return {};'
+  const globalStylesExpression = options.hasGlobalStyles ? '[__novaSfcGlobalStyle]' : '[]'
 
   return `import { NovaNode, NovaTemplateRuntime } from '@endge/nova';
-import { NovaUIKit } from '@endge/nova-ui-kit';
+import { NovaUIKit as __NovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
+${options.setup.imports.join('\n')}
+${options.generatedImports.join('\n')}
 
-const __novaSfcStyle = ${options.styleAssetCode};
-const ref = value => ({ value });
-const computed = fn => ({ get value() { return fn(); } });
-const watch = () => () => {};
-export const novaScopeId = __novaSfcStyle.scopeId;
+const __novaSfcStyle = ${options.scopedStyleAssetCode};
+const __novaSfcGlobalStyle = ${options.globalStyleAssetCode};
+const __novaSfcGlobalStyles = ${globalStylesExpression};
+${runtimeHelpers}
+export const novaScopeId = ${JSON.stringify(options.scopeId)};
 export const novaStyleSheet = __novaSfcStyle;
+export const novaGlobalStyleSheets = __novaSfcGlobalStyles;
 
 export default class ${options.className} extends NovaNode {
   constructor(app, surface, props = {}, listeners = {}) {
     super(app, surface);
     this.props = props;
     this.listeners = listeners;
+    this.__novaGlobalStyleDisposers = [];
+    this.installGlobalStyles();
     this.templateRuntime = new NovaTemplateRuntime(this);
     this.setupState = this.setup();
     this.options({
@@ -433,6 +757,14 @@ export default class ${options.className} extends NovaNode {
     });
   }
 
+  installGlobalStyles() {
+    for (const style of __novaSfcGlobalStyles) {
+      if (style.source.trim()) {
+        this.__novaGlobalStyleDisposers.push(registerNovaUiGlobalStyleSheet(this.nova, style));
+      }
+    }
+  }
+
   setup() {
     const __props = this.props;
     const __emit = this.emit.bind(this);
@@ -440,7 +772,7 @@ export default class ${options.className} extends NovaNode {
     const inject = (token) => this.inject(token);
     const injectOptional = (token, fallback) => this.injectOptional(token, fallback);
 ${indent(options.setup.body, 4)}
-    return { ${options.setup.names.join(', ')} };
+    ${setupReturn}
   }
 
   emit(name, ...args) {
@@ -449,7 +781,20 @@ ${indent(options.setup.body, 4)}
 
   setProps(patch) {
     Object.assign(this.props, patch);
+    if ('x' in patch || 'y' in patch || 'width' in patch || 'height' in patch) {
+      this.options({
+        x: this.props.x ?? this.x,
+        y: this.props.y ?? this.y,
+        width: this.props.width ?? this.width,
+        height: this.props.height ?? this.height,
+      });
+    }
     this.dirty({ update: true, render: true });
+    return this;
+  }
+
+  setListeners(listeners = {}) {
+    this.listeners = listeners;
     return this;
   }
 
@@ -470,6 +815,7 @@ ${indent(templateLocalDeclarations, 4)}
 
   dispose() {
     this.templateRuntime.dispose();
+    for (const dispose of this.__novaGlobalStyleDisposers.splice(0)) dispose();
     super.dispose();
   }
 }
