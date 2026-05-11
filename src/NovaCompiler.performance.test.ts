@@ -19,12 +19,15 @@ describe('Nova compiler performance', () => {
 
   it('compiles a large dynamic nova template under budget', () => {
     const rows = Array.from({ length: 200 }, (_item, index) => (
-      `<TextBlock id="item-${index}" :text="props.items[${index}]?.title" />`
+      index % 2 === 0
+        ? `<Inspector :documentId="props.items[${index}]?.id" />`
+        : `<TextBlock id="item-${index}" :text="props.items[${index}]?.title" />`
     )).join('\n')
 
     const start = performance.now()
     const result = compileNovaSfc(`
       <script setup>
+      import { InspectorNode as Inspector } from './InspectorNode'
       const props = defineProps()
       </script>
       <template>

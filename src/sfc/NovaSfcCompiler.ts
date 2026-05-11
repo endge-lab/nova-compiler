@@ -35,7 +35,7 @@ interface ScriptSetupCompileResult {
   imports: Array<string>
   body: string
   names: Array<string>
-  importedComponents: Set<string>
+  importedRuntimeSymbols: Set<string>
   topLevelNames: Set<string>
 }
 
@@ -49,7 +49,7 @@ interface StyleCompileResult {
 
 interface GenerateContext {
   diagnostics: Array<NovaUiStyleDiagnostic>
-  importedComponents: Set<string>
+  importedRuntimeSymbols: Set<string>
   generatedImports: Array<string>
   componentImports: Map<string, string>
   hasScopedStyles: boolean
@@ -115,13 +115,13 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     ? parseTemplate(sfc.descriptor.template.content, diagnostics)
     : []
   validateTemplateNodes(templateNodes, diagnostics, {
-    importedComponents: setup.importedComponents,
+    importedRuntimeSymbols: setup.importedRuntimeSymbols,
     hasScopedStyles: styles.hasScopedStyles,
   })
 
   const context: GenerateContext = {
     diagnostics,
-    importedComponents: setup.importedComponents,
+    importedRuntimeSymbols: setup.importedRuntimeSymbols,
     generatedImports: [],
     componentImports: new Map(),
     hasScopedStyles: styles.hasScopedStyles,
@@ -187,7 +187,7 @@ function joinStyleSources(styles: Array<SFCStyleBlock>, options: NovaSfcCompileO
 function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): ScriptSetupCompileResult {
   const importRanges: Array<[number, number]> = []
   const imports: Array<string> = []
-  const importedComponents = new Set<string>()
+  const importedRuntimeSymbols = new Set<string>()
   const topLevelNames = new Set<string>()
 
   if (source.trim()) {
@@ -201,13 +201,11 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
         if (typeof statement.start === 'number' && typeof statement.end === 'number' && statement.type === 'ImportDeclaration') {
           importRanges.push([statement.start, statement.end])
           if (statement.importKind !== 'type') imports.push(source.slice(statement.start, statement.end))
-          if (String(statement.source.value).endsWith('.nova')) {
+          if (statement.importKind !== 'type') {
             for (const specifier of statement.specifiers) {
-              importedComponents.add(specifier.local.name)
+              importedRuntimeSymbols.add(specifier.local.name)
               topLevelNames.add(specifier.local.name)
             }
-          } else {
-            for (const specifier of statement.specifiers) topLevelNames.add(specifier.local.name)
           }
           continue
         }
@@ -232,7 +230,7 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
     imports,
     body: transformed.trim(),
     names,
-    importedComponents,
+    importedRuntimeSymbols,
     topLevelNames,
   }
 }
@@ -402,7 +400,7 @@ function collectElementAttrs(
 function validateTemplateNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
-  options: { importedComponents: Set<string>; hasScopedStyles: boolean },
+  options: { importedRuntimeSymbols: Set<string>; hasScopedStyles: boolean },
 ): void {
   if (options.hasScopedStyles && (nodes.length !== 1 || nodes[0]?.tag !== 'Root')) {
     diagnostics.push({
@@ -418,13 +416,13 @@ function validateTemplateNodes(
 function validateTemplateNodeList(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
-  options: { importedComponents: Set<string> },
+  options: { importedRuntimeSymbols: Set<string> },
 ): void {
   let previousAcceptsElse = false
 
   for (const node of nodes) {
     const isComponentInclude = node.tag === 'Component'
-    const isImportedComponent = options.importedComponents.has(node.tag)
+    const isImportedComponent = options.importedRuntimeSymbols.has(node.tag)
     const staticSrc = readAttr(node, 'src')
 
     if (!UI_KIT_TAGS.has(node.tag)
@@ -546,7 +544,7 @@ function generateSchema(
   isTopLevelRoot: boolean,
 ): string {
   const type = resolveNodeTypeExpression(node, context)
-  const isCompiledComponent = node.tag === 'Component' || context.importedComponents.has(node.tag)
+  const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const props = generateProps(node, context, isCompiledComponent, isTopLevelRoot)
   const events = generateEvents(node, isCompiledComponent)
   const children = node.children.length > 0 ? generateNodeSequence(node.children, context) : ''
@@ -573,7 +571,7 @@ function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext)
     return resolveComponentImport(src, context)
   }
 
-  if (context.importedComponents.has(node.tag)) return node.tag
+  if (context.importedRuntimeSymbols.has(node.tag)) return node.tag
   if (UI_KIT_TAGS.has(node.tag)) return `__NovaUIKit.${node.tag}`
   return JSON.stringify(node.tag)
 }

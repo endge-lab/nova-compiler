@@ -93,6 +93,30 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('select:(...args) => (emit')
   })
 
+  it('compiles imported class component symbols and aliases as constructor types', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import { InspectorNode as Inspector } from './InspectorNode'
+      import Sidebar from './Sidebar.nova'
+      </script>
+
+      <template>
+        <SplitPane>
+          <Inspector :documentId="props.id" />
+          <Sidebar />
+        </SplitPane>
+      </template>
+    `, {
+      filename: '/demo/ClassWorkbench.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain("import { InspectorNode as Inspector } from './InspectorNode'")
+    expect(result.code).toContain('type:Inspector')
+    expect(result.code).toContain('type:Sidebar')
+    expect(result.code).toContain('documentId:props.id')
+  })
+
   it('reports dynamic Component src and children on compiled components', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">
