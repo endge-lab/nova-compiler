@@ -66,7 +66,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     transform(source, id) {
       const cleanId = stripViteQuery(id)
 
-      if (virtualModules.has(id)) {
+      if (virtualModules.has(cleanId)) {
         return null
       }
 
@@ -92,7 +92,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
         }
       }
 
-      if (cleanId.endsWith('.vue')) {
+      if (cleanId.endsWith('.vue') && !isVueSubBlockRequest(id)) {
         clearVueInlineVirtualModules(virtualModules, cleanId)
         const novaStyles = extractVueNovaStyles(source)
         const transformed = transformVueNovaTemplateSlots(novaStyles.source, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.styles)
@@ -134,6 +134,8 @@ function transformVueNovaTemplateSlots(
   includeDiagnostics: boolean,
   novaStyleBlocks: Array<string> = [],
 ): string | null {
+  if (!hasVueNovaTemplateSlotSource(source)) return null
+
   const imports: Array<string> = []
   const replacements: Array<Replacement> = []
   let index = 0
@@ -233,6 +235,10 @@ function hasNovaTemplateSlot(node: any): boolean {
   return node.props?.some((prop: any) => prop.type === NodeTypes.DIRECTIVE
     && prop.name === 'slot'
     && prop.arg?.content === 'nova-template')
+}
+
+function hasVueNovaTemplateSlotSource(source: string): boolean {
+  return source.includes('#nova-template') || source.includes('v-slot:nova-template')
 }
 
 function isVueSlotRelay(node: any): boolean {
@@ -368,6 +374,10 @@ function resolveGeneratedOutputPath(outputDir: string, sourceId: string): string
 
 function stripViteQuery(id: string): string {
   return id.split('?')[0]
+}
+
+function isVueSubBlockRequest(id: string): boolean {
+  return id.includes('?vue') || id.includes('&vue')
 }
 
 function hashString(value: string): string {

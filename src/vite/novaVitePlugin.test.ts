@@ -110,6 +110,33 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).not.toContain('first-template')
   })
 
+  it('keeps inline #nova-template virtual module when Vue script block is transformed', async () => {
+    const plugin = novaVitePlugin()
+    const file = sourcePath('src/pages/Page.vue')
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">const label = "Demo"</script><template><NovaCanvas><template #nova-template><Root id="inline-template" /></template></NovaCanvas></template>',
+      file,
+    )
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+
+    expect(virtualId).toBeTruthy()
+
+    await runTransform(
+      plugin,
+      'const label = "Demo"',
+      `${file}?vue&type=script&setup=true&lang.ts`,
+    )
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('inline-template')
+
+    const transformLoadedVirtual = await runTransform(plugin, compiled as string, virtualId!)
+    expect(transformLoadedVirtual).toBeNull()
+  })
+
   it('moves Vue novacss style blocks into inline nova-template virtual modules', async () => {
     const plugin = novaVitePlugin()
 
@@ -205,6 +232,18 @@ describe('Nova Vite plugin generated debug output', () => {
       plugin,
       '<template><NovaCanvas><nova-template><Root /></nova-template></NovaCanvas></template>',
       sourcePath('src/pages/Page.vue'),
+    )
+
+    expect(result).toBeNull()
+  })
+
+  it('does not parse ordinary Vue templates without #nova-template', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><section><input></section></template>',
+      sourcePath('src/pages/Plain.vue'),
     )
 
     expect(result).toBeNull()
