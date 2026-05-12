@@ -44,4 +44,47 @@ describe('Nova compiler performance', () => {
     expect(result.code.length).toBeGreaterThan(5_000)
     expect(elapsed).toBeLessThan(150)
   })
+
+  it('compiles a large nova template with scoped slots under budget', () => {
+    const rows = Array.from({ length: 200 }, (_item, index) => (
+      `<TextBlock id="item-${index}" :text="props.items[${index}]?.title" />`
+    )).join('\n')
+    const slotBlocks = Array.from({ length: 20 }, (_item, index) => `
+      <ScrollArea id="scroll-${index}" :contentHeight="480">
+        <Flex>
+          <TextBlock :text="props.items[${index}]?.title" />
+        </Flex>
+        <template #thumb="{ orientation, state, thumbRect }">
+          <Surface
+            :key="orientation"
+            :x="thumbRect.x"
+            :y="thumbRect.y"
+            :width="thumbRect.width"
+            :height="thumbRect.height"
+            :opacity="state.opacity"
+          />
+        </template>
+      </ScrollArea>
+    `).join('\n')
+
+    const start = performance.now()
+    const result = compileNovaSfc(`
+      <script setup>
+      const props = defineProps()
+      </script>
+      <template>
+        <Root id="root">
+          <Grid id="grid">
+            ${rows}
+          </Grid>
+          ${slotBlocks}
+        </Root>
+      </template>
+    `)
+    const elapsed = performance.now() - start
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('slots:{thumb:')
+    expect(elapsed).toBeLessThan(180)
+  })
 })

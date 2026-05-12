@@ -117,7 +117,7 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('documentId:props.id')
   })
 
-  it('reports dynamic Component src and children on compiled components', () => {
+  it('reports dynamic Component src while compiling children as default slots', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">
       import TimelineChart from './TimelineChart.nova'
@@ -132,7 +132,90 @@ describe('Nova SFC compiler', () => {
     `)
 
     expect(result.diagnostics.some(item => item.code === 'dynamic-component-src')).toBe(true)
-    expect(result.diagnostics.some(item => item.code === 'compiled-component-children')).toBe(true)
+    expect(result.diagnostics.some(item => item.code === 'compiled-component-children')).toBe(false)
+    expect(result.code).toContain('slots:{default:')
+    expect(result.code).toContain('type:TimelineChart')
+  })
+
+  it('compiles named scoped slots and fallback slot outlets', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import SceneList from './SceneList.nova'
+      const props = defineProps()
+      </script>
+
+      <template>
+        <Root>
+          <ScrollArea id="scroll" scrollbarVisibility="active">
+            <Flex>
+              <TextBlock v-for="item in props.items" :key="item.id" :text="item.title" />
+            </Flex>
+
+            <template #thumb="{ orientation, state, thumbRect }">
+              <Surface
+                :key="orientation"
+                class="thumb"
+                :x="thumbRect.x"
+                :y="thumbRect.y"
+                :width="thumbRect.width"
+                :height="thumbRect.height"
+                :opacity="state.opacity"
+              />
+            </template>
+          </ScrollArea>
+
+          <SceneList>
+            <template #default="{ selected }">
+              <slot name="empty" :selected="selected">
+                <TextBlock text="fallback" />
+              </slot>
+            </template>
+          </SceneList>
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/Slots.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('slots:{thumb:')
+    expect(result.code).toContain('const { orientation, state, thumbRect } = __slotProps;')
+    expect(result.code).toContain('slots:{default:')
+    expect(result.code).toContain('this.renderSlot("empty"')
+    expect(result.code).toContain('selected:selected')
+  })
+
+  it('compiles named slots on Component src includes', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Component src="./Panel.nova">
+            <template #footer="{ state }">
+              <TextBlock :text="state.label" />
+            </template>
+          </Component>
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/ComponentSlots.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('import __NovaComponent0 from "./Panel.nova"')
+    expect(result.code).toContain('slots:{footer:')
+    expect(result.code).toContain('const { state } = __slotProps;')
+  })
+
+  it('reports orphan slot templates', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <template #thumb>
+          <TextBlock text="bad" />
+        </template>
+      </template>
+    `)
+
+    expect(result.diagnostics.some(item => item.code === 'orphan-slot-template')).toBe(true)
   })
 
   it('splits scoped and global style assets', () => {
