@@ -17,6 +17,7 @@ export interface NovaVitePluginOptions {
 interface VirtualNovaModule {
   source: string
   filename: string
+  ownerFile: string
 }
 
 interface ParsedAttr {
@@ -38,12 +39,12 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     enforce: 'pre',
 
     resolveId(id) {
-      if (virtualModules.has(id)) return id
+      if (virtualModules.has(stripViteQuery(id))) return id
       return null
     },
 
     load(id) {
-      const virtualModule = virtualModules.get(id)
+      const virtualModule = virtualModules.get(stripViteQuery(id))
       if (!virtualModule) return null
       return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput)
     },
@@ -78,6 +79,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       }
 
       if (cleanId.endsWith('.vue')) {
+        clearVueInlineVirtualModules(virtualModules, cleanId)
         const transformed = transformVueNovaTemplates(source, cleanId, virtualModules, options.includeDiagnostics ?? true)
         if (transformed) {
           writeGeneratedOutput(generatedOutput, `${cleanId}__nova_template_transform`, transformed)
@@ -142,10 +144,12 @@ function transformVueNovaTemplates(
         virtualModules.set(importSource, {
           filename: `${stripViteQuery(id)}__nova_template_${index}.nova`,
           source: `<template>\n${children?.trim() ?? ''}\n</template>`,
+          ownerFile: stripViteQuery(id),
         })
       }
 
-      imports.push(`import ${componentName} from ${JSON.stringify(importSource)};`)
+      const importModuleSource = src ? importSource : withVirtualVersion(importSource, children?.trim() ?? '')
+      imports.push(`import ${componentName} from ${JSON.stringify(importModuleSource)};`)
       changed = true
       index += 1
 
@@ -159,6 +163,16 @@ function transformVueNovaTemplates(
 
   if (!changed) return null
   return injectVueScriptSetupImports(transformed, imports.join('\n'))
+}
+
+function clearVueInlineVirtualModules(virtualModules: Map<string, VirtualNovaModule>, ownerFile: string): void {
+  for (const [id, module] of virtualModules.entries()) {
+    if (module.ownerFile === ownerFile) virtualModules.delete(id)
+  }
+}
+
+function withVirtualVersion(importSource: string, source: string): string {
+  return `${importSource}?v=${hashString(source)}`
 }
 
 function parseAttrs(source: string): Array<ParsedAttr> {
@@ -255,6 +269,17 @@ function resolveGeneratedOutputPath(outputDir: string, sourceId: string): string
 
 function stripViteQuery(id: string): string {
   return id.split('?')[0]
+}
+
+function hashString(value: string): string {
+  let hash = 2166136261
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+
+  return (hash >>> 0).toString(36)
 }
 
 function escapeAttr(value: string): string {

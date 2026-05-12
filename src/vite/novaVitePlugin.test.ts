@@ -73,11 +73,41 @@ describe('Nova Vite plugin generated debug output', () => {
 
     const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
     expect(virtualId).toBeTruthy()
+    expect(virtualId).toContain('?v=')
     await runLoad(plugin, virtualId!)
 
     const inlineOutput = path.join(outputDir, 'src/pages/Page.vue__nova_template_0.nova.ts')
 
     expect(fs.readFileSync(inlineOutput, 'utf8')).toContain('export default class PageVueNovaTemplate0 extends NovaNode')
+  })
+
+  it('versions inline nova-template virtual imports when Vue source changes', async () => {
+    const plugin = novaVitePlugin()
+    const file = sourcePath('src/pages/Page.vue')
+
+    const first = await runTransform(
+      plugin,
+      '<template><NovaCanvas><nova-template><Root id="first-template" /></nova-template></NovaCanvas></template>',
+      file,
+    )
+    const firstCode = (first as { code: string }).code
+    const firstVirtualId = firstCode.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+
+    const second = await runTransform(
+      plugin,
+      '<template><NovaCanvas><nova-template><Root id="second-template" /></nova-template></NovaCanvas></template>',
+      file,
+    )
+    const secondCode = (second as { code: string }).code
+    const secondVirtualId = secondCode.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+
+    expect(firstVirtualId).toBeTruthy()
+    expect(secondVirtualId).toBeTruthy()
+    expect(secondVirtualId).not.toBe(firstVirtualId)
+
+    const compiled = await runLoad(plugin, secondVirtualId!)
+    expect(compiled).toContain('second-template')
+    expect(compiled).not.toContain('first-template')
   })
 
   it('transforms nova-template src into a static component import and keeps attrs', async () => {
