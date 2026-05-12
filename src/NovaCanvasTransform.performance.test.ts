@@ -31,7 +31,10 @@ describe('NovaCanvas Vue transform performance', () => {
 
     expect(virtualIds).toHaveLength(5)
     expect(firstVirtualId).toBeTruthy()
-    expect(await runLoad(plugin, firstVirtualId!)).toBeNull()
+    expect(virtualIds[0]).not.toBe(firstVirtualId)
+    const reloadedFirstSlot = await runLoad(plugin, firstVirtualId!)
+    expect(reloadedFirstSlot).toContain('second-0-0')
+    expect(reloadedFirstSlot).not.toContain('first-0-0')
     expect(elapsed).toBeLessThan(180)
     console.info(`[bench] compiler:vue-novacanvas-5 elapsed=${elapsed.toFixed(2)}ms budget=180ms virtualModules=5`)
   })
