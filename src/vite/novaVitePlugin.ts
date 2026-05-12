@@ -51,6 +51,10 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     transform(source, id) {
       const cleanId = stripViteQuery(id)
 
+      if (virtualModules.has(id)) {
+        return null
+      }
+
       if (cleanId.endsWith('.novacss')) {
         const result = compileNovaCss(source, {
           filename: cleanId,
@@ -134,7 +138,7 @@ function transformVueNovaTemplates(
           }], includeDiagnostics)
         }
       } else {
-        importSource = `${stripViteQuery(id)}?nova-template=${index}`
+        importSource = `virtual:nova-template:${stripViteQuery(id)}:${index}.nova`
         virtualModules.set(importSource, {
           filename: `${stripViteQuery(id)}__nova_template_${index}.nova`,
           source: `<template>\n${children?.trim() ?? ''}\n</template>`,

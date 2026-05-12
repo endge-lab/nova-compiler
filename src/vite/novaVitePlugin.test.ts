@@ -71,7 +71,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain('import __NovaTemplate0')
     expect(code).toContain(':component="__NovaTemplate0"')
 
-    const virtualId = code.match(/from "([^"]+\?nova-template=0)"/)?.[1]
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
     expect(virtualId).toBeTruthy()
     await runLoad(plugin, virtualId!)
 
