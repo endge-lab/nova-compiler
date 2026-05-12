@@ -49,7 +49,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(fs.readFileSync(cssOutput, 'utf8')).toContain('const asset =')
   })
 
-  it('transforms inline nova-template into a virtual module import', async () => {
+  it('transforms #nova-template slot into a virtual module import', async () => {
     const outputDir = createTempDir()
     const plugin = novaVitePlugin({
       generatedOutput: {
@@ -60,7 +60,7 @@ describe('Nova Vite plugin generated debug output', () => {
 
     const result = await runTransform(
       plugin,
-      '<template><NovaCanvas><nova-template><Root /></nova-template></NovaCanvas></template>',
+      '<template><NovaCanvas><template #nova-template><Root /></template></NovaCanvas></template>',
       sourcePath('src/pages/Page.vue'),
     )
 
@@ -81,13 +81,13 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(fs.readFileSync(inlineOutput, 'utf8')).toContain('export default class PageVueNovaTemplate0 extends NovaNode')
   })
 
-  it('versions inline nova-template virtual imports when Vue source changes', async () => {
+  it('versions inline #nova-template virtual imports when Vue source changes', async () => {
     const plugin = novaVitePlugin()
     const file = sourcePath('src/pages/Page.vue')
 
     const first = await runTransform(
       plugin,
-      '<template><NovaCanvas><nova-template><Root id="first-template" /></nova-template></NovaCanvas></template>',
+      '<template><NovaCanvas><template #nova-template><Root id="first-template" /></template></NovaCanvas></template>',
       file,
     )
     const firstCode = (first as { code: string }).code
@@ -95,7 +95,7 @@ describe('Nova Vite plugin generated debug output', () => {
 
     const second = await runTransform(
       plugin,
-      '<template><NovaCanvas><nova-template><Root id="second-template" /></nova-template></NovaCanvas></template>',
+      '<template><NovaCanvas><template #nova-template><Root id="second-template" /></template></NovaCanvas></template>',
       file,
     )
     const secondCode = (second as { code: string }).code
@@ -110,12 +110,83 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).not.toContain('first-template')
   })
 
-  it('transforms nova-template src into a static component import and keeps attrs', async () => {
+  it('moves Vue novacss style blocks into inline nova-template virtual modules', async () => {
     const plugin = novaVitePlugin()
 
     const result = await runTransform(
       plugin,
-      '<template><NovaCanvas><nova-template src="@/demo/Chart.nova" :options="options" @select="onSelect"><Root /></nova-template></NovaCanvas></template>',
+      `
+        <template>
+          <NovaCanvas>
+            <template #nova-template>
+              <Root class="screen">
+                <TextBlock class="title" text="Demo" />
+              </Root>
+            </template>
+          </NovaCanvas>
+        </template>
+
+        <style lang="novacss" scoped>
+        Root.screen { background: #ffffff; }
+        TextBlock.title { color: #111111; }
+        </style>
+
+        <style>
+        .page { display: block; }
+        </style>
+      `,
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).not.toContain('lang="novacss"')
+    expect(code).toContain('.page { display: block; }')
+
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('styleSheet:__novaSfcStyle')
+    expect(compiled).toContain('#111111')
+  })
+
+  it('treats lang novascc as a compatibility alias for novacss', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <template>
+          <NovaCanvas>
+            <template #nova-template>
+              <Root class="screen" />
+            </template>
+          </NovaCanvas>
+        </template>
+
+        <style lang="novascc">
+        Root.screen { background: #ffffff; }
+        </style>
+      `,
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).not.toContain('lang="novascc"')
+
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('#ffffff')
+  })
+
+  it('transforms #nova-template src into a static component import and keeps attrs', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><NovaCanvas><template #nova-template src="@/demo/Chart.nova" :options="options" @select="onSelect"><Root /></template></NovaCanvas></template>',
       sourcePath('src/pages/Page.vue'),
     )
 
@@ -125,6 +196,18 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain(':options="options"')
     expect(code).toContain('@select="onSelect"')
     expect(code).not.toContain('<Root />')
+  })
+
+  it('does not transform legacy source nova-template tags anymore', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><NovaCanvas><nova-template><Root /></nova-template></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    expect(result).toBeNull()
   })
 })
 
