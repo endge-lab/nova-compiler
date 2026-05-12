@@ -657,12 +657,22 @@ function generateSchema(
     : ''
   const slots = generateSlots(node, context, isCompiledComponent)
   const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
+  const refName = readAttr(node, 'ref')
+  const dynamicRefKey = readAttr(node, ':ref-key') ?? readAttr(node, ':refKey')
+  const staticRefKey = readAttr(node, 'ref-key') ?? readAttr(node, 'refKey')
   const contextSource = readAttr(node, ':context')
   const layout = readAttr(node, ':layout') ?? readAttr(node, 'layout')
+  const id = readAttr(node, ':id')
+    ? `id:${readAttr(node, ':id')}`
+    : readAttr(node, 'id')
+      ? `id:${JSON.stringify(readAttr(node, 'id'))}`
+      : ''
   const fields = [
     `type:${type}`,
-    readAttr(node, 'id') ? `id:${JSON.stringify(readAttr(node, 'id'))}` : '',
+    id,
     key ? `key:${key}` : '',
+    refName ? `ref:${JSON.stringify(refName)}` : '',
+    dynamicRefKey ? `refKey:${dynamicRefKey}` : staticRefKey ? `refKey:${JSON.stringify(staticRefKey)}` : '',
     contextSource ? `context:${contextSource}` : '',
     layout ? `layout:${layout}` : '',
     props ? `props:${props}` : '',
@@ -776,6 +786,12 @@ function generateProps(
   for (const [name, value] of Object.entries(node.attrs)) {
     if (
       name === 'id'
+      || name === ':id'
+      || name === 'ref'
+      || name === 'ref-key'
+      || name === ':ref-key'
+      || name === 'refKey'
+      || name === ':refKey'
       || name === 'key'
       || name === ':key'
       || name === 'class'
@@ -911,7 +927,7 @@ export default class ${options.className} extends NovaNode {
     this.slots = slots;
     this.__novaGlobalStyleDisposers = [];
     this.installGlobalStyles();
-    this.templateRuntime = new NovaTemplateRuntime(this);
+    this.templateRuntime = new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} });
     this.setupState = this.setup();
     this.options({
       x: props.x ?? 0,
@@ -945,6 +961,7 @@ ${indent(options.setup.body, 4)}
 
   setProps(patch) {
     Object.assign(this.props, patch);
+    this.templateRuntime.setScope({ refs: this.props.novaRefs ?? {} });
     if ('x' in patch || 'y' in patch || 'width' in patch || 'height' in patch) {
       this.options({
         x: this.props.x ?? this.x,

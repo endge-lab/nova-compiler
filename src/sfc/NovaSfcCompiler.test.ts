@@ -30,7 +30,7 @@ describe('Nova SFC compiler', () => {
 
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('export default class NovaDemo extends NovaNode')
-    expect(result.code).toContain('new NovaTemplateRuntime(this)')
+    expect(result.code).toContain('new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} })')
     expect(result.code).toContain('props.items')
     expect(result.code).toContain("layout:{ width: '100%', height: 32 }")
     expect(result.code).not.toContain('const props = this.props;')
@@ -242,5 +242,25 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('registerNovaUiGlobalStyleSheet')
     expect(result.code).toContain('__novaScope: __novaSfcStyle.scopeId')
     expect(result.code).toContain('styleSheet:__novaSfcStyle')
+  })
+
+  it('emits ref and refKey schema fields without forwarding them as component props', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <TimelineChart.Root
+            ref="timeline"
+            :ref-key="item.id"
+            :data="props.data"
+          />
+        </Root>
+      </template>
+    `)
+
+    expect(result.code).toContain('ref:"timeline"')
+    expect(result.code).toContain('refKey:item.id')
+    expect(result.code).toContain('data:props.data')
+    expect(result.code).not.toContain('props:{ref:')
+    expect(result.code).not.toContain('props:{"ref-key"')
   })
 })
