@@ -29,6 +29,13 @@ interface TemplateNode {
   tag: string
   attrs: Record<string, string | true>
   children: Array<TemplateNode>
+  slots: Record<string, TemplateSlotNode>
+}
+
+interface TemplateSlotNode {
+  name: string
+  scope?: string
+  children: Array<TemplateNode>
 }
 
 interface ScriptSetupCompileResult {
@@ -321,20 +328,104 @@ function convertTemplateChild(
   if (child.type !== NodeTypes.ELEMENT) return []
 
   const element = child as ElementNode
-  if (element.tagType === ElementTypes.SLOT || element.tagType === ElementTypes.TEMPLATE) {
+  if (element.tagType === ElementTypes.TEMPLATE) {
     diagnostics.push({
       severity: 'error',
-      code: 'unsupported-template-node',
-      message: `Nova template не поддерживает <${element.tag}>.`,
+      code: 'orphan-slot-template',
+      message: '<template #name> должен быть дочерним элементом компонента.',
     })
     return []
   }
 
+  if (element.tagType === ElementTypes.SLOT) {
+    return [{
+      tag: 'slot',
+      attrs: collectElementAttrs(element, diagnostics),
+      children: convertElementChildren(element, diagnostics).children,
+      slots: {},
+    }]
+  }
+
+  const nested = convertElementChildren(element, diagnostics)
+
   return [{
     tag: element.tag,
     attrs: collectElementAttrs(element, diagnostics),
-    children: element.children.flatMap(nested => convertTemplateChild(nested, diagnostics)),
+    children: nested.children,
+    slots: nested.slots,
   }]
+}
+
+function convertElementChildren(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
+  const children: Array<TemplateNode> = []
+  const slots: Record<string, TemplateSlotNode> = {}
+
+  for (const child of element.children) {
+    if (child.type === NodeTypes.ELEMENT && child.tagType === ElementTypes.TEMPLATE) {
+      const slot = convertSlotTemplate(child as ElementNode, diagnostics)
+      if (slot) {
+        if (slots[slot.name]) {
+          diagnostics.push({
+            severity: 'error',
+            code: 'duplicate-slot',
+            message: `Slot "${slot.name}" уже объявлен.`,
+          })
+        } else {
+          slots[slot.name] = slot
+        }
+        continue
+      }
+    }
+
+    children.push(...convertTemplateChild(child, diagnostics))
+  }
+
+  return { children, slots }
+}
+
+function convertSlotTemplate(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): TemplateSlotNode | null {
+  const slotDirective = element.props.find((prop): prop is DirectiveNode => (
+    prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot'
+  ))
+
+  if (!slotDirective) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'unsupported-template-node',
+      message: 'Nova template поддерживает <template> только как named slot: <template #name>.',
+    })
+    return null
+  }
+
+  const arg = slotDirective.arg
+  if (arg && (arg.type !== NodeTypes.SIMPLE_EXPRESSION || (arg as any).isStatic === false)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'dynamic-slot-name',
+      message: 'Dynamic slot names не поддерживаются. Используйте статический #name.',
+    })
+    return null
+  }
+
+  const name = arg && arg.type === NodeTypes.SIMPLE_EXPRESSION && arg.content
+    ? arg.content
+    : 'default'
+  const scope = slotDirective.exp && slotDirective.exp.type === NodeTypes.SIMPLE_EXPRESSION
+    ? slotDirective.exp.content.trim()
+    : undefined
+  const nested = convertElementChildren(element, diagnostics)
+
+  return {
+    name,
+    scope,
+    children: nested.children,
+  }
 }
 
 function collectElementAttrs(
@@ -424,8 +515,10 @@ function validateTemplateNodeList(
     const isComponentInclude = node.tag === 'Component'
     const isImportedComponent = options.importedRuntimeSymbols.has(node.tag)
     const staticSrc = readAttr(node, 'src')
+    const isSlotOutlet = node.tag === 'slot'
 
-    if (!UI_KIT_TAGS.has(node.tag)
+    if (!isSlotOutlet
+      && !UI_KIT_TAGS.has(node.tag)
       && !PRIMITIVE_TAGS.has(node.tag)
       && !node.tag.includes('.')
       && !isComponentInclude
@@ -463,11 +556,11 @@ function validateTemplateNodeList(
       }
     }
 
-    if ((isComponentInclude || isImportedComponent) && node.children.length > 0) {
+    if (isSlotOutlet && readAttr(node, ':name')) {
       diagnostics.push({
         severity: 'error',
-        code: 'compiled-component-children',
-        message: `<${node.tag}> пока не поддерживает children/slots.`,
+        code: 'dynamic-slot-name',
+        message: '<slot :name> не поддерживается. Используйте статический name.',
       })
     }
 
@@ -481,6 +574,9 @@ function validateTemplateNodeList(
     }
 
     validateTemplateNodeList(node.children, diagnostics, options)
+    for (const slot of Object.values(node.slots)) {
+      validateTemplateNodeList(slot.children, diagnostics, options)
+    }
     previousAcceptsElse = !!readAttr(node, 'v-if') || !!readAttr(node, 'v-else-if')
   }
 }
@@ -498,7 +594,7 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
       continue
     }
 
-    let branch = `(${condition}) ? [${generateSchema(node, false, context, index === 0)}]`
+    let branch = `(${condition}) ? ${generateNodeArray(node, context, index === 0)}`
     let fallback = '[]'
     let cursor = index + 1
     while (cursor < nodes.length) {
@@ -508,9 +604,9 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
       if (!elseIf && !hasElse) break
 
       if (elseIf) {
-        branch += ` : (${elseIf}) ? [${generateSchema(next, false, context, cursor === 0)}]`
+        branch += ` : (${elseIf}) ? ${generateNodeArray(next, context, cursor === 0)}`
       } else {
-        fallback = `[${generateSchema(next, false, context, cursor === 0)}]`
+        fallback = generateNodeArray(next, context, cursor === 0)
         cursor += 1
         break
       }
@@ -537,17 +633,29 @@ function generateNodeList(node: TemplateNode, context: GenerateContext, isTopLev
   return generateSchema(node, false, context, isTopLevelRoot)
 }
 
+function generateNodeArray(node: TemplateNode, context: GenerateContext, isTopLevelRoot: boolean): string {
+  const list = generateNodeList(node, context, isTopLevelRoot)
+  return list.startsWith('(') || list.startsWith('this.renderSlot(')
+    ? list
+    : `[${list}]`
+}
+
 function generateSchema(
   node: TemplateNode,
   fromFor: boolean,
   context: GenerateContext,
   isTopLevelRoot: boolean,
 ): string {
+  if (node.tag === 'slot') return generateSlotOutlet(node, context)
+
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const props = generateProps(node, context, isCompiledComponent, isTopLevelRoot)
   const events = generateEvents(node, isCompiledComponent)
-  const children = node.children.length > 0 ? generateNodeSequence(node.children, context) : ''
+  const children = node.children.length > 0 && !isCompiledComponent
+    ? generateNodeSequence(node.children, context)
+    : ''
+  const slots = generateSlots(node, context, isCompiledComponent)
   const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
   const contextSource = readAttr(node, ':context')
   const layout = readAttr(node, ':layout') ?? readAttr(node, 'layout')
@@ -560,8 +668,65 @@ function generateSchema(
     props ? `props:${props}` : '',
     events ? `events:${events}` : '',
     children ? `children:${children}` : '',
+    slots ? `slots:${slots}` : '',
   ].filter(Boolean)
   return `{${fields.join(',')}}`
+}
+
+function generateSlots(
+  node: TemplateNode,
+  context: GenerateContext,
+  isCompiledComponent: boolean,
+): string {
+  const entries: Array<[string, TemplateSlotNode]> = Object.entries(node.slots)
+  if (isCompiledComponent && node.children.length > 0 && !node.slots.default) {
+    entries.push(['default', {
+      name: 'default',
+      children: node.children,
+    }])
+  }
+  if (entries.length === 0) return ''
+
+  const slots = entries.map(([name, slot]) => {
+    const scopeDeclaration = slot.scope
+      ? `const ${slot.scope} = __slotProps;`
+      : ''
+    return `${quoteKey(name)}:(__slotProps = {}) => {
+${indent(scopeDeclaration, 6)}
+      return ${generateNodeSequence(slot.children, context)};
+    }`
+  })
+
+  return `{${slots.join(',')}}`
+}
+
+function generateSlotOutlet(node: TemplateNode, context: GenerateContext): string {
+  const name = readAttr(node, 'name') ?? 'default'
+  const fallback = node.children.length > 0 ? generateNodeSequence(node.children, context) : '[]'
+  const scope = generateSlotOutletScope(node)
+  return `this.renderSlot(${JSON.stringify(name)}, ${scope}, ${fallback})`
+}
+
+function generateSlotOutletScope(node: TemplateNode): string {
+  const entries: Array<string> = []
+  for (const [name, value] of Object.entries(node.attrs)) {
+    if (
+      name === 'name'
+      || name === ':name'
+      || name === 'key'
+      || name === ':key'
+      || name.startsWith('v-')
+      || name.startsWith('@')
+    ) continue
+
+    if (name.startsWith(':')) {
+      entries.push(`${quoteKey(name.slice(1))}:${value}`)
+      continue
+    }
+    entries.push(`${quoteKey(name)}:${serializeStaticAttr(value)}`)
+  }
+
+  return entries.length > 0 ? `{${entries.join(',')}}` : '{}'
 }
 
 function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext): string {
@@ -739,10 +904,11 @@ export const novaStyleSheet = __novaSfcStyle;
 export const novaGlobalStyleSheets = __novaSfcGlobalStyles;
 
 export default class ${options.className} extends NovaNode {
-  constructor(app, surface, props = {}, listeners = {}) {
+  constructor(app, surface, props = {}, listeners = {}, slots = {}) {
     super(app, surface);
     this.props = props;
     this.listeners = listeners;
+    this.slots = slots;
     this.__novaGlobalStyleDisposers = [];
     this.installGlobalStyles();
     this.templateRuntime = new NovaTemplateRuntime(this);
@@ -794,6 +960,17 @@ ${indent(options.setup.body, 4)}
   setListeners(listeners = {}) {
     this.listeners = listeners;
     return this;
+  }
+
+  setSlots(slots = {}) {
+    this.slots = slots;
+    this.dirty({ update: true, render: true });
+    return this;
+  }
+
+  renderSlot(name = 'default', scope = {}, fallback = []) {
+    const slot = this.slots?.[name];
+    return typeof slot === 'function' ? slot(scope) : fallback;
   }
 
   update() {
