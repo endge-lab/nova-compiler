@@ -38,6 +38,24 @@ describe('NovaCanvas Vue transform performance', () => {
     expect(elapsed).toBeLessThan(180)
     console.info(`[bench] compiler:vue-novacanvas-5 elapsed=${elapsed.toFixed(2)}ms budget=180ms virtualModules=5`)
   })
+
+  it('transforms a large inline NovaCanvas DSL with control-flow under budget', async () => {
+    const plugin = novaVitePlugin()
+    const source = createVueControlFlowSource()
+
+    const startedAt = performance.now()
+    const result = await runTransform(plugin, source, `${process.cwd()}/src/pages/ControlFlowBench.vue`)
+    const elapsed = performance.now() - startedAt
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+
+    expect(virtualId).toBeTruthy()
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('__novaFor(props.rows).flatMap((row, index)')
+    expect(compiled).toContain('props.selected')
+    expect(elapsed).toBeLessThan(140)
+    console.info(`[bench] compiler:vue-inline-control-flow elapsed=${elapsed.toFixed(2)}ms budget=140ms`)
+  })
 })
 
 function createVueSource(canvasCount: number, nodeCount: number, bindingCount: number, label = 'bench'): string {
@@ -70,6 +88,32 @@ function createVueSource(canvasCount: number, nodeCount: number, bindingCount: n
     <style lang="novacss">
     Root { background: #ffffff; }
     </style>
+  `
+}
+
+function createVueControlFlowSource(): string {
+  const staticNodes = Array.from({ length: 120 }, (_item, index) => (
+    `<TextBlock id="label-${index}" :text="labels[${index % 10}]" />`
+  )).join('\n')
+
+  return `
+    <script setup lang="ts">
+    const rows = Array.from({ length: 50 }, (_item, index) => ({ id: index, title: String(index) }))
+    const labels = Array.from({ length: 10 }, (_item, index) => String(index))
+    const selected = true
+    </script>
+
+    <template>
+      <NovaCanvas>
+        <Flex direction="column">
+          <Surface for="row in rows" :key="row.id" if="selected" :x="row.id">
+            <TextBlock :text="row.title" />
+          </Surface>
+          <TextBlock else text="No selection" />
+          ${staticNodes}
+        </Flex>
+      </NovaCanvas>
+    </template>
   `
 }
 

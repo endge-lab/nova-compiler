@@ -321,7 +321,7 @@ function normalizeInlineVueTemplateBindings(templateSource: string): NormalizedI
   }
 
   let source = templateSource.replace(
-    /(v-for="[^"]+\s(?:in|of)\s+)([A-Za-z_$][\w$]*)(")/g,
+    /(for="[^"]+\s(?:in|of)\s+)([A-Za-z_$][\w$]*)(")/g,
     (match, prefix: string, name: string, suffix: string) => {
       if (isImplicitNovaTemplateBinding(name) || locals.has(name)) return match
       addBinding(name)
@@ -330,7 +330,7 @@ function normalizeInlineVueTemplateBindings(templateSource: string): NormalizedI
   )
 
   source = source.replace(
-    /((?::[\w-]+|v-if|v-else-if)=")([A-Za-z_$][\w$]*)(")/g,
+    /((?::[\w-]+|if|else-if)=")([A-Za-z_$][\w$]*)(")/g,
     (match, prefix: string, name: string, suffix: string) => {
       if (isImplicitNovaTemplateBinding(name) || locals.has(name)) return match
       addBinding(name)
@@ -368,9 +368,18 @@ function collectInlineNovaTemplateLocals(templateSource: string): Set<string> {
           continue
         }
 
+        if ((prop.name === 'bind' || prop.name === 'on') && prop.exp?.content) {
+          continue
+        }
+
         if (prop.name === 'slot' && prop.exp?.content) {
           collectExpressionLocals(prop.exp.content, locals)
         }
+      }
+
+      for (const prop of node.props ?? []) {
+        if (prop.type !== NodeTypes.ATTRIBUTE || prop.name !== 'for' || !prop.value?.content) continue
+        collectVForLocals(prop.value.content, locals)
       }
     })
   } catch {

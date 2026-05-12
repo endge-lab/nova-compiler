@@ -8,13 +8,12 @@ describe('Nova compiler performance', () => {
       `TextBlock.item-${index} { color: var(--nova-scene-text, #123456); fontSize: ${12 + (index % 8)}; }`
     )).join('\n')
 
-    const start = performance.now()
-    const result = compileNovaCss(source)
-    const elapsed = performance.now() - start
+    const { result, elapsed } = measureCompileNovaCss(source)
 
     expect(result.ok).toBe(true)
     expect(result.styleSheet?.rules).toHaveLength(1_000)
     expect(elapsed).toBeLessThan(150)
+    console.info(`[bench] compiler:novacss-1000 elapsed=${elapsed.toFixed(2)}ms budget=150ms`)
   })
 
   it('compiles a large dynamic nova template under budget', () => {
@@ -87,7 +86,50 @@ describe('Nova compiler performance', () => {
     expect(elapsed).toBeLessThan(180)
     console.info(`[bench] compiler:nova-slots elapsed=${elapsed.toFixed(2)}ms budget=180ms`)
   })
+
+  it('compiles public if/for control-flow under budget', () => {
+    const rows = Array.from({ length: 80 }, (_item, index) => `
+      <Surface for="cell in props.rows[${index}]?.cells ?? []" :key="cell.id" :x="cell.x" :y="cell.y">
+        <TextBlock if="cell.visible" :text="cell.label" />
+        <TextBlock else-if="cell.loading" text="Loading" />
+        <TextBlock else text="Empty" />
+      </Surface>
+    `).join('\n')
+
+    const source = `
+      <script setup>
+      const props = defineProps()
+      </script>
+      <template>
+        <Root id="root">
+          <Grid id="grid">
+            ${rows}
+          </Grid>
+        </Root>
+      </template>
+    `
+    const { result, elapsed } = measureCompileNovaSfc(source)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('__novaFor')
+    expect(result.code).toContain('cell.visible')
+    expect(elapsed).toBeLessThan(160)
+    console.info(`[bench] compiler:nova-control-flow elapsed=${elapsed.toFixed(2)}ms budget=160ms`)
+  })
 })
+
+function measureCompileNovaCss(source: string): { result: ReturnType<typeof compileNovaCss>; elapsed: number } {
+  let best: { result: ReturnType<typeof compileNovaCss>; elapsed: number } | null = null
+
+  for (let index = 0; index < 3; index += 1) {
+    const start = performance.now()
+    const result = compileNovaCss(source)
+    const elapsed = performance.now() - start
+    if (!best || elapsed < best.elapsed) best = { result, elapsed }
+  }
+
+  return best!
+}
 
 function measureCompileNovaSfc(source: string): { result: ReturnType<typeof compileNovaSfc>; elapsed: number } {
   let best: { result: ReturnType<typeof compileNovaSfc>; elapsed: number } | null = null

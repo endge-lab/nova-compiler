@@ -231,12 +231,12 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(second).not.toContain('One')
   })
 
-  it('normalizes v-for sources, simple event handlers and keeps loop locals intact', async () => {
+  it('normalizes for sources, simple event handlers and keeps loop locals intact', async () => {
     const plugin = novaVitePlugin()
 
     const result = await runTransform(
       plugin,
-      '<script setup lang="ts">const rows = []; const selected = true; function onSelect() {}</script><template><NovaCanvas><TextBlock v-for="row in rows" :key="row.id" v-if="selected" :text="row.title" @press="onSelect" /></NovaCanvas></template>',
+      '<script setup lang="ts">const rows = []; const selected = true; function onSelect() {}</script><template><NovaCanvas><TextBlock for="row in rows" :key="row.id" if="selected" :text="row.title" @press="onSelect" /></NovaCanvas></template>',
       sourcePath('src/pages/Page.vue'),
     )
 
@@ -249,10 +249,25 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(virtualId).toBeTruthy()
 
     const compiled = await runLoad(plugin, virtualId!)
-    expect(compiled).toContain('(props.rows ?? []).flatMap((row, index)')
+    expect(compiled).toContain('__novaFor(props.rows).flatMap((row, index)')
     expect(compiled).toContain('row.title')
     expect(compiled).toContain('props.selected')
     expect(compiled).toContain('onPress:props.novaHandlerOnSelect')
+  })
+
+  it('keeps legacy v-if/v-for unsupported in inline NovaCanvas DSL', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><NovaCanvas><TextBlock v-for="row in rows" :key="row.id" v-if="selected" :text="row.title" /></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+
+    expect(virtualId).toBeTruthy()
+    await expect(runLoad(plugin, virtualId!)).rejects.toThrow(/unsupported-directive/)
   })
 
   it('keeps explicit top-level Root as the only Root wrapper', async () => {

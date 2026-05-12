@@ -23,11 +23,43 @@ export interface NovaSfcCompileResult {
   diagnostics: Array<NovaUiStyleDiagnostic>
   scopeId: string
   dependencies: Array<string>
+  metadata: NovaSfcSourceMetadata
+}
+
+export interface NovaSourceRange {
+  start: number
+  end: number
+}
+
+export type NovaDefinitionTargetKind = 'ui-kit' | 'component-src' | 'import' | 'namespaced' | 'unknown'
+
+export interface NovaDefinitionTarget {
+  kind: NovaDefinitionTargetKind
+  name: string
+  source?: string
+  symbol?: string
+}
+
+export interface NovaTemplateNodeMetadata {
+  tag: string
+  range: NovaSourceRange
+  tagRange: NovaSourceRange
+  attrs: Record<string, string | true>
+  attrRanges: Record<string, NovaSourceRange>
+  target: NovaDefinitionTarget
+}
+
+export interface NovaSfcSourceMetadata {
+  filename?: string
+  nodes: Array<NovaTemplateNodeMetadata>
 }
 
 interface TemplateNode {
   tag: string
   attrs: Record<string, string | true>
+  attrRanges: Record<string, NovaSourceRange>
+  range: NovaSourceRange
+  tagRange: NovaSourceRange
   children: Array<TemplateNode>
   slots: Record<string, TemplateSlotNode>
 }
@@ -44,6 +76,13 @@ interface ScriptSetupCompileResult {
   names: Array<string>
   importedRuntimeSymbols: Set<string>
   topLevelNames: Set<string>
+  importBindings: Map<string, ScriptSetupImportBinding>
+}
+
+interface ScriptSetupImportBinding {
+  local: string
+  imported: string
+  source: string
 }
 
 interface StyleCompileResult {
@@ -83,6 +122,25 @@ const UI_KIT_TAGS = new Set([
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
 
+export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
+  Root: 'packages/@endge-nova-ui-kit/src/components/Root/Root.ts',
+  Flex: 'packages/@endge-nova-ui-kit/src/components/Flex/Flex.ts',
+  Grid: 'packages/@endge-nova-ui-kit/src/components/Grid/Grid.ts',
+  TextBlock: 'packages/@endge-nova-ui-kit/src/components/TextBlock/TextBlock.ts',
+  Surface: 'packages/@endge-nova-ui-kit/src/components/Surface/Surface.ts',
+  Button: 'packages/@endge-nova-ui-kit/src/components/Button/Button.ts',
+  Tag: 'packages/@endge-nova-ui-kit/src/components/Tag/Tag.ts',
+  SplitPane: 'packages/@endge-nova-ui-kit/src/components/SplitPane/SplitPane.ts',
+  ScrollArea: 'packages/@endge-nova-ui-kit/src/components/ScrollArea/ScrollArea.ts',
+  Scrollbar: 'packages/@endge-nova-ui-kit/src/components/Scrollbar/Scrollbar.ts',
+  Slider: 'packages/@endge-nova-ui-kit/src/components/Slider/Slider.ts',
+  Checkbox: 'packages/@endge-nova-ui-kit/src/components/Checkbox/Checkbox.ts',
+  Toggle: 'packages/@endge-nova-ui-kit/src/components/Toggle/Toggle.ts',
+  Tooltip: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltip.ts',
+  SegmentedControl: 'packages/@endge-nova-ui-kit/src/components/SegmentedControl/SegmentedControl.ts',
+  Panel: 'packages/@endge-nova-ui-kit/src/components/Panel/Panel.ts',
+}
+
 /** Компилирует `.nova` SFC в TypeScript module с generated NovaNode class. */
 export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = {}): NovaSfcCompileResult {
   const filename = options.filename
@@ -118,8 +176,9 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
   const styles = compileSfcStyles(sfc.descriptor.styles, scopeId, options)
   diagnostics.push(...styles.diagnostics)
 
+  const templateOffset = sfc.descriptor.template?.loc.start.offset ?? 0
   const templateNodes = sfc.descriptor.template
-    ? parseTemplate(sfc.descriptor.template.content, diagnostics)
+    ? parseTemplate(sfc.descriptor.template.content, diagnostics, templateOffset)
     : []
   validateTemplateNodes(templateNodes, diagnostics, {
     importedRuntimeSymbols: setup.importedRuntimeSymbols,
@@ -150,6 +209,10 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     diagnostics,
     scopeId,
     dependencies: [...context.componentImports.keys()],
+    metadata: {
+      filename,
+      nodes: createTemplateMetadata(templateNodes, setup),
+    },
   }
 }
 
@@ -196,6 +259,7 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
   const imports: Array<string> = []
   const importedRuntimeSymbols = new Set<string>()
   const topLevelNames = new Set<string>()
+  const importBindings = new Map<string, ScriptSetupImportBinding>()
 
   if (source.trim()) {
     try {
@@ -212,6 +276,11 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
             for (const specifier of statement.specifiers) {
               importedRuntimeSymbols.add(specifier.local.name)
               topLevelNames.add(specifier.local.name)
+              importBindings.set(specifier.local.name, {
+                local: specifier.local.name,
+                imported: resolveImportedName(specifier),
+                source: String(statement.source.value),
+              })
             }
           }
           continue
@@ -239,7 +308,15 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
     names,
     importedRuntimeSymbols,
     topLevelNames,
+    importBindings,
   }
+}
+
+function resolveImportedName(specifier: any): string {
+  if (specifier.type === 'ImportDefaultSpecifier') return 'default'
+  if (specifier.type === 'ImportNamespaceSpecifier') return '*'
+  const imported = specifier.imported
+  return imported?.name ?? imported?.value ?? specifier.local?.name ?? 'default'
 }
 
 function collectStatementNames(statement: any, target: Set<string>): void {
@@ -306,14 +383,19 @@ function removeRanges(source: string, ranges: Array<[number, number]>): string {
   return output
 }
 
-function parseTemplate(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): Array<TemplateNode> {
+function parseTemplate(
+  source: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset = 0,
+): Array<TemplateNode> {
   const root = baseParse(source)
-  return root.children.flatMap(child => convertTemplateChild(child, diagnostics)).filter(Boolean)
+  return root.children.flatMap(child => convertTemplateChild(child, diagnostics, baseOffset)).filter(Boolean)
 }
 
 function convertTemplateChild(
   child: TemplateChildNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
 ): Array<TemplateNode> {
   if (child.type === NodeTypes.TEXT) {
     if (child.content.trim()) {
@@ -341,16 +423,22 @@ function convertTemplateChild(
     return [{
       tag: 'slot',
       attrs: collectElementAttrs(element, diagnostics),
-      children: convertElementChildren(element, diagnostics).children,
+      attrRanges: collectElementAttrRanges(element, baseOffset),
+      range: toSourceRange(element, baseOffset),
+      tagRange: toTagSourceRange(element, baseOffset),
+      children: convertElementChildren(element, diagnostics, baseOffset).children,
       slots: {},
     }]
   }
 
-  const nested = convertElementChildren(element, diagnostics)
+  const nested = convertElementChildren(element, diagnostics, baseOffset)
 
   return [{
     tag: element.tag,
     attrs: collectElementAttrs(element, diagnostics),
+    attrRanges: collectElementAttrRanges(element, baseOffset),
+    range: toSourceRange(element, baseOffset),
+    tagRange: toTagSourceRange(element, baseOffset),
     children: nested.children,
     slots: nested.slots,
   }]
@@ -359,13 +447,14 @@ function convertTemplateChild(
 function convertElementChildren(
   element: ElementNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
 ): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
   const children: Array<TemplateNode> = []
   const slots: Record<string, TemplateSlotNode> = {}
 
   for (const child of element.children) {
     if (child.type === NodeTypes.ELEMENT && child.tagType === ElementTypes.TEMPLATE) {
-      const slot = convertSlotTemplate(child as ElementNode, diagnostics)
+      const slot = convertSlotTemplate(child as ElementNode, diagnostics, baseOffset)
       if (slot) {
         if (slots[slot.name]) {
           diagnostics.push({
@@ -380,7 +469,7 @@ function convertElementChildren(
       }
     }
 
-    children.push(...convertTemplateChild(child, diagnostics))
+    children.push(...convertTemplateChild(child, diagnostics, baseOffset))
   }
 
   return { children, slots }
@@ -389,6 +478,7 @@ function convertElementChildren(
 function convertSlotTemplate(
   element: ElementNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
 ): TemplateSlotNode | null {
   const slotDirective = element.props.find((prop): prop is DirectiveNode => (
     prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot'
@@ -419,7 +509,7 @@ function convertSlotTemplate(
   const scope = slotDirective.exp && slotDirective.exp.type === NodeTypes.SIMPLE_EXPRESSION
     ? slotDirective.exp.content.trim()
     : undefined
-  const nested = convertElementChildren(element, diagnostics)
+  const nested = convertElementChildren(element, diagnostics, baseOffset)
 
   return {
     name,
@@ -474,11 +564,6 @@ function collectElementAttrs(
       continue
     }
 
-    if (['if', 'else-if', 'else', 'for'].includes(directive.name)) {
-      attrs[`v-${directive.name}`] = exp || true
-      continue
-    }
-
     diagnostics.push({
       severity: 'error',
       code: 'unsupported-directive',
@@ -486,6 +571,42 @@ function collectElementAttrs(
     })
   }
   return attrs
+}
+
+function collectElementAttrRanges(element: ElementNode, baseOffset: number): Record<string, NovaSourceRange> {
+  const ranges: Record<string, NovaSourceRange> = {}
+  for (const prop of element.props) {
+    if (prop.type === NodeTypes.ATTRIBUTE) {
+      ranges[prop.name] = toSourceRange(prop, baseOffset)
+      continue
+    }
+    const directive = prop as DirectiveNode
+    const arg = directive.arg && directive.arg.type === NodeTypes.SIMPLE_EXPRESSION
+      ? directive.arg.content
+      : ''
+    const key = directive.name === 'bind'
+      ? arg ? `:${arg}` : 'v-bind'
+      : directive.name === 'on'
+        ? arg ? `@${arg}` : 'v-on'
+        : `v-${directive.name}`
+    ranges[key] = toSourceRange(prop, baseOffset)
+  }
+  return ranges
+}
+
+function toSourceRange(node: { loc: { start: { offset: number }; end: { offset: number } } }, baseOffset: number): NovaSourceRange {
+  return {
+    start: baseOffset + node.loc.start.offset,
+    end: baseOffset + node.loc.end.offset,
+  }
+}
+
+function toTagSourceRange(element: ElementNode, baseOffset: number): NovaSourceRange {
+  const start = baseOffset + element.loc.start.offset + 1
+  return {
+    start,
+    end: start + element.tag.length,
+  }
 }
 
 function validateTemplateNodes(
@@ -531,11 +652,11 @@ function validateTemplateNodeList(
       })
     }
 
-    if (readAttr(node, 'v-for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
+    if (readAttr(node, 'for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
       diagnostics.push({
         severity: 'error',
         code: 'missing-key',
-        message: `v-for на <${node.tag}> должен содержать обязательный :key.`,
+        message: `for на <${node.tag}> должен содержать обязательный :key.`,
       })
     }
 
@@ -564,12 +685,12 @@ function validateTemplateNodeList(
       })
     }
 
-    const isElseBranch = !!readAttr(node, 'v-else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'v-else')
+    const isElseBranch = !!readAttr(node, 'else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'else')
     if (isElseBranch && !previousAcceptsElse) {
       diagnostics.push({
         severity: 'error',
         code: 'orphan-else',
-        message: `v-else/v-else-if на <${node.tag}> должен идти после v-if.`,
+        message: `else/else-if на <${node.tag}> должен идти после if.`,
       })
     }
 
@@ -577,7 +698,7 @@ function validateTemplateNodeList(
     for (const slot of Object.values(node.slots)) {
       validateTemplateNodeList(slot.children, diagnostics, options)
     }
-    previousAcceptsElse = !!readAttr(node, 'v-if') || !!readAttr(node, 'v-else-if')
+    previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
   }
 }
 
@@ -586,9 +707,9 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]
-    if (readAttr(node, 'v-else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'v-else')) continue
+    if (readAttr(node, 'else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'else')) continue
 
-    const condition = readAttr(node, 'v-if')
+    const condition = readAttr(node, 'if')
     if (!condition) {
       chunks.push(generateNodeList(node, context, index === 0))
       continue
@@ -599,8 +720,8 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
     let cursor = index + 1
     while (cursor < nodes.length) {
       const next = nodes[cursor]
-      const elseIf = readAttr(next, 'v-else-if')
-      const hasElse = Object.prototype.hasOwnProperty.call(next.attrs, 'v-else')
+      const elseIf = readAttr(next, 'else-if')
+      const hasElse = Object.prototype.hasOwnProperty.call(next.attrs, 'else')
       if (!elseIf && !hasElse) break
 
       if (elseIf) {
@@ -621,16 +742,16 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
 }
 
 function generateNodeList(node: TemplateNode, context: GenerateContext, isTopLevelRoot: boolean): string {
-  const forSource = readAttr(node, 'v-for')
+  const forSource = readAttr(node, 'for')
   if (forSource) {
     const parsed = parseForExpression(forSource)
     if (parsed) {
-      const schema = generateSchema(node, true, context, isTopLevelRoot)
-      return `(${parsed.source} ?? []).flatMap((${parsed.item}, ${parsed.index}) => [${schema}])`
+      const schema = generateSchema(node, context, isTopLevelRoot)
+      return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => [${schema}])`
     }
   }
 
-  return generateSchema(node, false, context, isTopLevelRoot)
+  return generateSchema(node, context, isTopLevelRoot)
 }
 
 function generateNodeArray(node: TemplateNode, context: GenerateContext, isTopLevelRoot: boolean): string {
@@ -642,7 +763,6 @@ function generateNodeArray(node: TemplateNode, context: GenerateContext, isTopLe
 
 function generateSchema(
   node: TemplateNode,
-  fromFor: boolean,
   context: GenerateContext,
   isTopLevelRoot: boolean,
 ): string {
@@ -656,7 +776,7 @@ function generateSchema(
     ? generateNodeSequence(node.children, context)
     : ''
   const slots = generateSlots(node, context, isCompiledComponent)
-  const key = readAttr(node, ':key') ?? readAttr(node, 'key') ?? (fromFor ? 'index' : undefined)
+  const key = readAttr(node, ':key') ?? readAttr(node, 'key')
   const refName = readAttr(node, 'ref')
   const dynamicRefKey = readAttr(node, ':ref-key') ?? readAttr(node, ':refKey')
   const staticRefKey = readAttr(node, 'ref-key') ?? readAttr(node, 'refKey')
@@ -725,7 +845,7 @@ function generateSlotOutletScope(node: TemplateNode): string {
       || name === ':name'
       || name === 'key'
       || name === ':key'
-      || name.startsWith('v-')
+      || isControlFlowAttr(name)
       || name.startsWith('@')
     ) continue
 
@@ -803,7 +923,7 @@ function generateProps(
       || name === ':layout'
       || name === 'src'
       || name === ':src'
-      || name.startsWith('v-')
+      || isControlFlowAttr(name)
       || name.startsWith('@')
     ) continue
 
@@ -850,12 +970,85 @@ function readAttr(node: TemplateNode, name: string): string | undefined {
 }
 
 function parseForExpression(source: string): { item: string; index: string; source: string } | null {
-  const match = source.match(/^\s*(?:\(([^,\s]+)\s*,\s*([^)]+)\)|([^\s]+))\s+in\s+(.+)\s*$/)
+  const match = source.match(/^\s*(?:\(([^,\s]+)\s*,\s*([^)]+)\)|([^\s]+))\s+(?:in|of)\s+(.+)\s*$/)
   if (!match) return null
   return {
-    item: match[1] ?? match[3],
-    index: match[2] ?? 'index',
-    source: match[4],
+    item: (match[1] ?? match[3]).trim(),
+    index: (match[2] ?? 'index').trim(),
+    source: match[4].trim(),
+  }
+}
+
+function isControlFlowAttr(name: string): boolean {
+  return name === 'if' || name === 'else-if' || name === 'else' || name === 'for'
+}
+
+function createTemplateMetadata(
+  nodes: Array<TemplateNode>,
+  setup: ScriptSetupCompileResult,
+): Array<NovaTemplateNodeMetadata> {
+  const result: Array<NovaTemplateNodeMetadata> = []
+  collectTemplateMetadata(nodes, setup, result)
+  return result
+}
+
+function collectTemplateMetadata(
+  nodes: Array<TemplateNode>,
+  setup: ScriptSetupCompileResult,
+  result: Array<NovaTemplateNodeMetadata>,
+): void {
+  for (const node of nodes) {
+    result.push({
+      tag: node.tag,
+      range: node.range,
+      tagRange: node.tagRange,
+      attrs: node.attrs,
+      attrRanges: node.attrRanges,
+      target: resolveTemplateNodeTarget(node, setup),
+    })
+    collectTemplateMetadata(node.children, setup, result)
+    for (const slot of Object.values(node.slots)) collectTemplateMetadata(slot.children, setup, result)
+  }
+}
+
+function resolveTemplateNodeTarget(node: TemplateNode, setup: ScriptSetupCompileResult): NovaDefinitionTarget {
+  if (NOVA_UI_KIT_DEFINITION_TARGETS[node.tag]) {
+    return {
+      kind: 'ui-kit',
+      name: node.tag,
+      source: NOVA_UI_KIT_DEFINITION_TARGETS[node.tag],
+      symbol: node.tag,
+    }
+  }
+
+  if (node.tag === 'Component') {
+    const src = readAttr(node, 'src')
+    return src
+      ? { kind: 'component-src', name: src, source: src }
+      : { kind: 'unknown', name: node.tag }
+  }
+
+  const imported = setup.importBindings.get(node.tag) ?? setup.importBindings.get(node.tag.split('.')[0] ?? '')
+  if (imported) {
+    return {
+      kind: 'import',
+      name: node.tag,
+      source: imported.source,
+      symbol: imported.imported,
+    }
+  }
+
+  if (node.tag.includes('.')) {
+    return {
+      kind: 'namespaced',
+      name: node.tag,
+      symbol: node.tag,
+    }
+  }
+
+  return {
+    kind: 'unknown',
+    name: node.tag,
   }
 }
 
@@ -914,6 +1107,16 @@ ${options.generatedImports.join('\n')}
 const __novaSfcStyle = ${options.scopedStyleAssetCode};
 const __novaSfcGlobalStyle = ${options.globalStyleAssetCode};
 const __novaSfcGlobalStyles = ${globalStylesExpression};
+const __novaFor = source => {
+  if (typeof source === 'number') {
+    const count = Math.max(0, Math.floor(source));
+    return Array.from({ length: count }, (_item, index) => index + 1);
+  }
+  if (Array.isArray(source)) return source;
+  if (source && typeof source[Symbol.iterator] === 'function') return Array.from(source);
+  if (source && typeof source === 'object') return Object.values(source);
+  return [];
+};
 ${runtimeHelpers}
 export const novaScopeId = ${JSON.stringify(options.scopeId)};
 export const novaStyleSheet = __novaSfcStyle;

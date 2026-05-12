@@ -12,7 +12,7 @@ describe('Nova SFC compiler', () => {
       <template>
         <Root id="root" class="demo">
           <Button
-            v-for="item in props.items"
+            for="item in props.items"
             :key="item.id"
             :layout="{ width: '100%', height: 32 }"
             :text="item.title"
@@ -31,7 +31,7 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('export default class NovaDemo extends NovaNode')
     expect(result.code).toContain('new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} })')
-    expect(result.code).toContain('props.items')
+    expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
     expect(result.code).toContain("layout:{ width: '100%', height: 32 }")
     expect(result.code).not.toContain('const props = this.props;')
     expect(result.code).toContain('const props = this.setupState.props;')
@@ -54,17 +54,63 @@ describe('Nova SFC compiler', () => {
     const result = compileNovaSfc(`
       <template>
         <Root>
-          <TextBlock v-if="props.ready" text="ready" />
-          <TextBlock v-else-if="props.pending" text="pending" />
-          <TextBlock v-else text="empty" />
-          <Button v-for="item in props.items" :text="item.title" />
+          <TextBlock if="props.ready" text="ready" />
+          <TextBlock else-if="props.pending" text="pending" />
+          <TextBlock else text="empty" />
+          <Button for="item in props.items" :text="item.title" />
         </Root>
       </template>
     `)
 
     expect(result.diagnostics.some(item => item.code === 'missing-key')).toBe(true)
+    expect(result.diagnostics.some(item => item.code === 'unsupported-directive')).toBe(false)
     expect(result.code).toContain('(props.ready) ?')
     expect(result.code).toContain('(props.pending) ?')
+  })
+
+  it('requires keys for numeric range loops', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Surface for="i in 5" :x="i" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics.some(item => item.code === 'missing-key')).toBe(true)
+  })
+
+  it('compiles public if/else-if/else and for syntax', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <TextBlock if="props.ready" text="ready" />
+          <TextBlock else-if="props.pending" text="pending" />
+          <TextBlock else text="empty" />
+          <Button for="item in props.items" :key="item.id" :text="item.title" />
+          <Surface for="i in 5" :key="i" :x="i" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('(props.ready) ?')
+    expect(result.code).toContain('(props.pending) ?')
+    expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
+    expect(result.code).toContain('__novaFor(5).flatMap((i, index)')
+  })
+
+  it('reports legacy v-if/v-for as unsupported directives', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <TextBlock v-if="props.ready" text="ready" />
+          <Button v-for="item in props.items" :key="item.id" :text="item.title" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics.filter(item => item.code === 'unsupported-directive')).toHaveLength(2)
   })
 
   it('compiles imported nova components and Component src includes', () => {
@@ -148,7 +194,7 @@ describe('Nova SFC compiler', () => {
         <Root>
           <ScrollArea id="scroll" scrollbarVisibility="active">
             <Flex>
-              <TextBlock v-for="item in props.items" :key="item.id" :text="item.title" />
+              <TextBlock for="item in props.items" :key="item.id" :text="item.title" />
             </Flex>
 
             <template #thumb="{ orientation, state, thumbRect }">

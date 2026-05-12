@@ -26,7 +26,8 @@ export function compileNovaCss(source: string, options: NovaCssCompileOptions = 
   const flattenedSource = resolveImports(source, options, imports, diagnostics)
   const scopedSource = options.scopeId ? scopeNovaCss(flattenedSource, options.scopeId) : flattenedSource
   const validation = validateNovaUiStyleSheetSource(scopedSource)
-  const tokenDependencies = extractNovaUiStyleTokenDependencies(scopedSource)
+  const tokenDependencies = validation.styleSheet?.tokenDependencies
+    ?? extractNovaUiStyleTokenDependencies(scopedSource)
 
   return {
     ok: validation.ok && !diagnostics.some(item => item.severity === 'error'),
