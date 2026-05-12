@@ -174,11 +174,11 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(virtualId).toBeTruthy()
 
     const compiled = await runLoad(plugin, virtualId!)
-    expect(compiled).toContain('styleSheet:__novaSfcStyle')
+    expect(compiled).toContain('styleSheet:props.styleSheet ?? styleSheet')
     expect(compiled).toContain('#111111')
   })
 
-  it('treats lang novascc as a compatibility alias for novacss', async () => {
+  it('does not treat lang novascc as NovaCSS', async () => {
     const plugin = novaVitePlugin()
 
     const result = await runTransform(
@@ -198,13 +198,61 @@ describe('Nova Vite plugin generated debug output', () => {
     )
 
     const code = (result as { code: string }).code
-    expect(code).not.toContain('lang="novascc"')
+    expect(code).toContain('lang="novascc"')
 
     const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
     expect(virtualId).toBeTruthy()
 
     const compiled = await runLoad(plugin, virtualId!)
-    expect(compiled).toContain('#ffffff')
+    expect(compiled).not.toContain('#ffffff')
+  })
+
+  it('transforms multiple NovaCanvas instances independently', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<template><section><NovaCanvas><TextBlock text="One" /></NovaCanvas><NovaCanvas><TextBlock text="Two" /></NovaCanvas></section></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    const virtualIds = [...code.matchAll(/from "(virtual:nova-template:[^"]+)"/g)].map(match => match[1])
+
+    expect(code).toContain('import __NovaTemplate0')
+    expect(code).toContain('import __NovaTemplate1')
+    expect(virtualIds).toHaveLength(2)
+
+    const first = await runLoad(plugin, virtualIds[0])
+    const second = await runLoad(plugin, virtualIds[1])
+    expect(first).toContain('One')
+    expect(first).not.toContain('Two')
+    expect(second).toContain('Two')
+    expect(second).not.toContain('One')
+  })
+
+  it('normalizes v-for sources, simple event handlers and keeps loop locals intact', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">const rows = []; const selected = true; function onSelect() {}</script><template><NovaCanvas><TextBlock v-for="row in rows" :key="row.id" v-if="selected" :text="row.title" @press="onSelect" /></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain(':rows="rows"')
+    expect(code).toContain(':selected="selected"')
+    expect(code).toContain(':nova-handler-on-select="onSelect"')
+
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('(props.rows ?? []).flatMap((row, index)')
+    expect(compiled).toContain('row.title')
+    expect(compiled).toContain('props.selected')
+    expect(compiled).toContain('onPress:props.novaHandlerOnSelect')
   })
 
   it('keeps explicit top-level Root as the only Root wrapper', async () => {
@@ -258,7 +306,8 @@ describe('Nova Vite plugin generated debug output', () => {
     const compiled = await runLoad(plugin, virtualId!)
     expect(compiled).toContain('import __NovaComponent0 from "@/demo/Chart.nova"')
     expect(compiled).toContain('options:props.options')
-    expect(compiled).toContain('select:(...args) => (onSelect')
+    expect(code).toContain(':nova-handler-on-select="onSelect"')
+    expect(compiled).toContain('events:{select:props.novaHandlerOnSelect}')
   })
 
   it('does not transform source #nova-template slots anymore', async () => {
