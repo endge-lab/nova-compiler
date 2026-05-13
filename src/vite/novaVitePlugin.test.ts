@@ -77,6 +77,8 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(virtualId).toBeTruthy()
     expect(virtualId).toContain('?v=')
     const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('registerNovaUIKit(app.schema)')
+    expect(compiled).toContain('__ensureNovaUiKit(app)')
     expect(compiled).toContain('type:__NovaUIKit.Root')
     expect(compiled).toContain('width:props.width')
     expect(compiled).toContain('data:props.initialData')

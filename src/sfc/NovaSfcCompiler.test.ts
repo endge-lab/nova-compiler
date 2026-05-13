@@ -30,6 +30,8 @@ describe('Nova SFC compiler', () => {
 
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('export default class NovaDemo extends NovaNode')
+    expect(result.code).toContain('registerNovaUIKit(app.schema)')
+    expect(result.code).toContain('__ensureNovaUiKit(app)')
     expect(result.code).toContain('new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} })')
     expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
     expect(result.code).toContain("layout:{ width: '100%', height: 32 }")

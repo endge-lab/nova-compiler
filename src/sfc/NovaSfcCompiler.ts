@@ -1100,13 +1100,19 @@ function generateModule(options: {
   const globalStylesExpression = options.hasGlobalStyles ? '[__novaSfcGlobalStyle]' : '[]'
 
   return `import { NovaNode, NovaTemplateRuntime } from '@endge/nova';
-import { NovaUIKit as __NovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
+import { NovaUIKit as __NovaUIKit, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
 ${options.setup.imports.join('\n')}
 ${options.generatedImports.join('\n')}
 
 const __novaSfcStyle = ${options.scopedStyleAssetCode};
 const __novaSfcGlobalStyle = ${options.globalStyleAssetCode};
 const __novaSfcGlobalStyles = ${globalStylesExpression};
+const __novaUiKitRegisteredApps = new WeakSet();
+const __ensureNovaUiKit = app => {
+  if (__novaUiKitRegisteredApps.has(app)) return;
+  registerNovaUIKit(app.schema);
+  __novaUiKitRegisteredApps.add(app);
+};
 const __novaFor = source => {
   if (typeof source === 'number') {
     const count = Math.max(0, Math.floor(source));
@@ -1125,6 +1131,7 @@ export const novaGlobalStyleSheets = __novaSfcGlobalStyles;
 export default class ${options.className} extends NovaNode {
   constructor(app, surface, props = {}, listeners = {}, slots = {}) {
     super(app, surface);
+    __ensureNovaUiKit(app);
     this.props = props;
     this.listeners = listeners;
     this.slots = slots;
