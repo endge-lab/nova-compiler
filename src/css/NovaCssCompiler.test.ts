@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileNovaCss } from '@/css/NovaCssCompiler'
+import { compileNovaCss } from '@/css/nova-css-compiler'
 
 describe('Nova CSS compiler', () => {
   it('compiles imports, nesting and token dependencies', () => {

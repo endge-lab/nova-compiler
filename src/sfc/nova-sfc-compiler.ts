@@ -11,7 +11,7 @@ import {
 } from '@vue/compiler-dom'
 import { parse as parseSfc, type SFCStyleBlock } from '@vue/compiler-sfc'
 import type { NovaUiStyleDiagnostic } from '@endge/nova-ui-kit'
-import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/NovaCssCompiler'
+import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/nova-css-compiler'
 
 export interface NovaSfcCompileOptions extends NovaCssCompileOptions {
   filename?: string

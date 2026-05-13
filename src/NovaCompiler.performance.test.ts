@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { compileNovaCss } from '@/css/NovaCssCompiler'
-import { compileNovaSfc } from '@/sfc/NovaSfcCompiler'
+import { compileNovaCss } from '@/css/nova-css-compiler'
+import { compileNovaSfc } from '@/sfc/nova-sfc-compiler'
 
 describe('Nova compiler performance', () => {
   it('compiles 1000 novacss rules under budget', () => {

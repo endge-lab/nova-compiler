@@ -1,13 +1,13 @@
 import { baseParse, ElementTypes, NodeTypes, type ElementNode, type TemplateChildNode } from '@vue/compiler-dom'
 import { parse as parseVueSfc } from '@vue/compiler-sfc'
-import { compileNovaCss } from '@/css/NovaCssCompiler'
+import { compileNovaCss } from '@/css/nova-css-compiler'
 import {
   compileNovaSfc,
   NOVA_UI_KIT_DEFINITION_TARGETS,
   type NovaDefinitionTarget,
   type NovaSourceRange,
   type NovaTemplateNodeMetadata,
-} from '@/sfc/NovaSfcCompiler'
+} from '@/sfc/nova-sfc-compiler'
 
 export interface NovaLanguageDiagnostic {
   severity: 'error' | 'warning'

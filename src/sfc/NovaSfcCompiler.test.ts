@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileNovaSfc } from '@/sfc/NovaSfcCompiler'
+import { compileNovaSfc } from '@/sfc/nova-sfc-compiler'
 
 describe('Nova SFC compiler', () => {
   it('generates a NovaNode class with setup, keyed loop and scoped style asset', () => {

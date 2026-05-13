@@ -3,7 +3,7 @@ import {
   getNovaLanguageDefinitionLinks,
   getNovaLanguageDefinitions,
   getNovaLanguageMetadata,
-} from '@/language/NovaLanguageService'
+} from '@/language/nova-language-service'
 
 describe('Nova language service', () => {
   it('resolves UI Kit tags to source definitions', () => {
