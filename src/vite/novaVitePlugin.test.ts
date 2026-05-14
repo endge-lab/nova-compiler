@@ -424,6 +424,53 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).not.toContain('type:"TimelineTaskProfile"')
   })
 
+  it('keeps TimelineChart.Root runtime children when extracting task profiles', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <script setup lang="ts">
+        const data = []
+        const options = {}
+        const groupsOnLeft = true
+        </script>
+
+        <template>
+          <NovaCanvas>
+            <TimelineChart.Root sync="auto" :data="data" :options="options">
+              <Flex direction="row" :width="1000" :height="520">
+                <TimelineChart.GroupsPanel id="timeline-groups" :layout="{ width: 220, order: groupsOnLeft ? 0 : 1 }" />
+                <Flex direction="column" :layout="{ flexGrow: 1, order: groupsOnLeft ? 1 : 0 }">
+                  <TimelineChart.TimeScale id="timeline-scale" :layout="{ height: 52 }" />
+                  <TimelineChart.TasksPanel id="timeline-tasks" :layout="{ flexGrow: 1 }" />
+                </Flex>
+              </Flex>
+
+              <TimelineTaskProfile name="planned" v-slot="{ task, width, height }">
+                <Rect :width="width" :height="height" background="#e8eef8" />
+                <TextBlock :text="task.title" :width="width - 24" :height="height" />
+              </TimelineTaskProfile>
+            </TimelineChart.Root>
+          </NovaCanvas>
+        </template>
+      `,
+      sourcePath('src/pages/TimelineParts.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('taskProfiles:{defaultProfileId:\'default\',profiles:{')
+    expect(compiled).toContain('children:[{type:__NovaUIKit.Flex')
+    expect(compiled).toContain('type:"TimelineChart.GroupsPanel"')
+    expect(compiled).toContain('type:"TimelineChart.TimeScale"')
+    expect(compiled).toContain('type:"TimelineChart.TasksPanel"')
+    expect(compiled).not.toContain('type:"TimelineTaskProfile"')
+  })
+
   it('does not parse ordinary Vue templates without NovaCanvas', async () => {
     const plugin = novaVitePlugin()
 
