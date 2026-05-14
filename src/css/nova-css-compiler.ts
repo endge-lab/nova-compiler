@@ -87,16 +87,98 @@ function resolveImports(
 }
 
 function scopeNovaCss(source: string, scopeId: string): string {
-  return source.replace(/([^{}@]+)\{/g, (_raw, selectorSource: string) => {
-    const selectors = selectorSource
-      .split(',')
-      .map(selector => selector.trim())
-      .filter(Boolean)
-      .map(selector => selector.includes(`[__novaScope="${scopeId}"]`)
-        ? selector
-        : `${selector}[__novaScope="${scopeId}"]`)
-    return `${selectors.join(', ')} {`
-  })
+  return scopeNovaCssBlock(source, scopeId)
+}
+
+function scopeNovaCssBlock(source: string, scopeId: string): string {
+  let output = ''
+  let cursor = 0
+
+  while (cursor < source.length) {
+    const openIndex = findNextBrace(source, cursor)
+    if (openIndex < 0) {
+      output += source.slice(cursor)
+      break
+    }
+
+    const prelude = source.slice(cursor, openIndex)
+    const blockEnd = findMatchingBrace(source, openIndex)
+    if (blockEnd < 0) {
+      output += source.slice(cursor)
+      break
+    }
+
+    const trimmedPrelude = prelude.trim()
+    const body = source.slice(openIndex + 1, blockEnd)
+    if (trimmedPrelude.startsWith('@')) {
+      output += `${prelude}{${scopeNovaCssBlock(body, scopeId)}}`
+    } else {
+      output += `${scopeSelectorPrelude(prelude, scopeId)}{${scopeNovaCssBlock(body, scopeId)}}`
+    }
+    cursor = blockEnd + 1
+  }
+
+  return output
+}
+
+function scopeSelectorPrelude(prelude: string, scopeId: string): string {
+  const leading = prelude.match(/^\s*/)?.[0] ?? ''
+  const trailing = prelude.match(/\s*$/)?.[0] ?? ''
+  const selectorSource = prelude.trim()
+  if (!selectorSource) return prelude
+
+  const selectors = selectorSource
+    .split(',')
+    .map(selector => selector.trim())
+    .filter(Boolean)
+    .map(selector => selector.includes(`[__novaScope="${scopeId}"]`)
+      ? selector
+      : `${selector}[__novaScope="${scopeId}"]`)
+
+  return `${leading}${selectors.join(', ')}${trailing}`
+}
+
+function findNextBrace(source: string, cursor: number): number {
+  let quote = ''
+
+  for (let index = cursor; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === '\'') {
+      quote = char
+      continue
+    }
+    if (char === '{') return index
+  }
+
+  return -1
+}
+
+function findMatchingBrace(source: string, openIndex: number): number {
+  let depth = 0
+  let quote = ''
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === '\'') {
+      quote = char
+      continue
+    }
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+
+  return -1
 }
 
 function serializeValue(value: unknown): string {

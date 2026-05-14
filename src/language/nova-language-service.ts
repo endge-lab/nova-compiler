@@ -59,6 +59,7 @@ const COMPONENT_COMPLETIONS = [
 ]
 
 const STYLE_COMPLETIONS = [
+  '@media',
   'color',
   'fontFamily',
   'font-family',
@@ -80,6 +81,9 @@ const STYLE_COMPLETIONS = [
   'borderRadius',
   'border-radius',
   'clip',
+  'display',
+  'none',
+  'normal',
   'gap',
   'rowGap',
   'row-gap',
@@ -100,6 +104,11 @@ const STYLE_COMPLETIONS = [
   'disabledOpacity',
   'disabled-opacity',
   'cursor',
+  'hidden',
+  'shown',
+  'sm:',
+  'md:',
+  'lg:',
 ]
 
 /** Возвращает diagnostics для IDE/LSP integrations. */
@@ -107,6 +116,8 @@ export function getNovaLanguageDiagnostics(
   source: string,
   filename: string,
 ): Array<NovaLanguageDiagnostic> {
+  if (filename.endsWith('.vue')) return collectVueNovaCssDiagnostics(source, filename)
+
   const result = filename.endsWith('.novacss')
     ? compileNovaCss(source, { filename })
     : compileNovaSfc(source, { filename })
@@ -124,6 +135,37 @@ export function getNovaLanguageCompletions(filename: string): Array<NovaCompleti
     ...COMPONENT_COMPLETIONS.map(label => ({ label, kind: 'component' as const })),
     ...STYLE_COMPLETIONS.map(label => ({ label, kind: 'property' as const })),
   ]
+}
+
+function collectVueNovaCssDiagnostics(
+  source: string,
+  filename: string,
+): Array<NovaLanguageDiagnostic> {
+  const sfc = parseVueSfc(source, { filename })
+  const diagnostics: Array<NovaLanguageDiagnostic> = []
+
+  for (const error of sfc.errors) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'sfc-parse-error',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  for (const block of sfc.descriptor.styles) {
+    if (block.lang !== 'novacss') continue
+
+    const result = compileNovaCss(block.content, { filename })
+    diagnostics.push(...result.diagnostics.map(diagnostic => ({
+      ...diagnostic,
+      line: block.loc.start.line + (diagnostic.line ?? 1) - 1,
+      column: (diagnostic.line ?? 1) === 1
+        ? block.loc.start.column + (diagnostic.column ?? 1) - 1
+        : diagnostic.column,
+    })))
+  }
+
+  return diagnostics
 }
 
 /** Возвращает source metadata для IDE integrations. */
