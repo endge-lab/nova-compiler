@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getNovaLanguageCompletions,
+  getNovaLanguageDiagnostics,
   getNovaLanguageDefinitionLinks,
   getNovaLanguageDefinitions,
   getNovaLanguageMetadata,
@@ -94,5 +96,41 @@ describe('Nova language service', () => {
       source: './DemoScene.nova',
       symbol: 'default',
     })
+  })
+
+  it('reports Vue novacss style diagnostics with Vue source offsets', () => {
+    const source = `
+      <template>
+        <NovaCanvas>
+          <Flex />
+        </NovaCanvas>
+      </template>
+      <style lang="novacss">
+      .box {
+        display: flex;
+      }
+      </style>
+    `
+
+    const diagnostics = getNovaLanguageDiagnostics(source, '/demo/Page.vue')
+
+    expect(diagnostics.some(item => item.code === 'unsupported-display')).toBe(true)
+    expect(diagnostics[0]?.line).toBeGreaterThan(7)
+  })
+
+  it('offers NovaCSS media, display and responsive utility completions', () => {
+    const completions = getNovaLanguageCompletions('/demo/style.novacss').map(item => item.label)
+
+    expect(completions).toEqual(expect.arrayContaining([
+      '@media',
+      'display',
+      'none',
+      'normal',
+      'hidden',
+      'shown',
+      'sm:',
+      'md:',
+      'lg:',
+    ]))
   })
 })

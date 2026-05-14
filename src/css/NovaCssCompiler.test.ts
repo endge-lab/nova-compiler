@@ -60,4 +60,27 @@ describe('Nova CSS compiler', () => {
     expect(declarations?.layout?.columnGap).toBe(12)
     expect(declarations?.visual?.accentColor).toBe('#14b8a6')
   })
+
+  it('compiles canvas media queries and scopes selectors inside media blocks', () => {
+    const result = compileNovaCss(`
+      .box {
+        display: normal;
+      }
+
+      @media (min-width: 900px) {
+        .box {
+          display: none;
+        }
+      }
+    `, {
+      scopeId: 'abc123',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.source).toContain('@media (min-width: 900px)')
+    expect(result.source).toContain('.box[__novaScope="abc123"]')
+    expect(result.styleSheet?.rules).toHaveLength(2)
+    expect(result.styleSheet?.rules[1]?.media?.features).toEqual([{ name: 'min-width', value: 900 }])
+    expect(result.styleSheet?.rules[1]?.declarations.layout?.display).toBe('none')
+  })
 })

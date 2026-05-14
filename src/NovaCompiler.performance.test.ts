@@ -16,6 +16,22 @@ describe('Nova compiler performance', () => {
     console.info(`[bench] compiler:novacss-1000 elapsed=${elapsed.toFixed(2)}ms budget=150ms`)
   })
 
+  it('compiles 1000 novacss rules with 100 media conditions under budget', () => {
+    const rules = Array.from({ length: 1_000 }, (_item, index) => (
+      `.item-${index} { color: #123456; fontSize: ${12 + (index % 8)}; }`
+    )).join('\n')
+    const mediaRules = Array.from({ length: 100 }, (_item, index) => (
+      `@media (min-width: ${600 + index * 4}px) { .item-${index} { display: ${index % 2 === 0 ? 'none' : 'normal'}; } }`
+    )).join('\n')
+
+    const { result, elapsed } = measureCompileNovaCss(`${rules}\n${mediaRules}`)
+
+    expect(result.ok).toBe(true)
+    expect(result.styleSheet?.rules).toHaveLength(1_100)
+    expect(elapsed).toBeLessThan(180)
+    console.info(`[bench] compiler:novacss-media elapsed=${elapsed.toFixed(2)}ms budget=180ms`)
+  })
+
   it('compiles a large dynamic nova template under budget', () => {
     const rows = Array.from({ length: 200 }, (_item, index) => (
       index % 2 === 0
