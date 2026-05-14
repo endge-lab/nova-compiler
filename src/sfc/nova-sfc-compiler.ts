@@ -121,6 +121,8 @@ const UI_KIT_TAGS = new Set([
 ])
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
+const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
+const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Text', 'TextBlock'])
 
 export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Root: 'packages/@endge-nova-ui-kit/src/components/Root/Root.ts',
@@ -139,6 +141,33 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Tooltip: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltip.ts',
   SegmentedControl: 'packages/@endge-nova-ui-kit/src/components/SegmentedControl/SegmentedControl.ts',
   Panel: 'packages/@endge-nova-ui-kit/src/components/Panel/Panel.ts',
+}
+
+export interface TimelineTaskProfilesCompileResult {
+  code: string
+  diagnostics: Array<NovaUiStyleDiagnostic>
+}
+
+/**
+ * Компилирует декларативные TimelineTaskProfile nodes в plain TimelineTaskProfilesOptions fragment.
+ */
+export function compileTimelineTaskProfilesSource(source: string): TimelineTaskProfilesCompileResult {
+  const diagnostics: Array<NovaUiStyleDiagnostic> = []
+  const nodes = parseTemplate(source, diagnostics)
+  validateTimelineTaskProfileNodes(nodes, diagnostics)
+
+  const context: GenerateContext = {
+    diagnostics,
+    importedRuntimeSymbols: new Set(),
+    generatedImports: [],
+    componentImports: new Map(),
+    hasScopedStyles: false,
+  }
+
+  return {
+    code: generateTimelineTaskProfiles(nodes, context),
+    diagnostics,
+  }
 }
 
 /** Компилирует `.nova` SFC в TypeScript module с generated NovaNode class. */
@@ -538,6 +567,10 @@ function collectElementAttrs(
       ? directive.exp.content
       : ''
 
+    if (directive.name === 'slot' && element.tag === 'TimelineTaskProfile') {
+      continue
+    }
+
     if (directive.name === 'bind') {
       if (!arg) {
         diagnostics.push({
@@ -641,6 +674,8 @@ function validateTemplateNodeList(
     if (!isSlotOutlet
       && !UI_KIT_TAGS.has(node.tag)
       && !PRIMITIVE_TAGS.has(node.tag)
+      && !TIMELINE_PROFILE_MARKER_TAGS.has(node.tag)
+      && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
       && !node.tag.includes('.')
       && !isComponentInclude
       && !isImportedComponent
@@ -770,10 +805,19 @@ function generateSchema(
 
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
-  const props = generateProps(node, context, isCompiledComponent, isTopLevelRoot)
+  const childNodes = isTimelineRootTag(node)
+    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile')
+    : node.children
+  const timelineTaskProfiles = isTimelineRootTag(node)
+    ? generateTimelineTaskProfilesProp(node.children, context)
+    : ''
+  const props = mergePropsCode(
+    generateProps(node, context, isCompiledComponent, isTopLevelRoot),
+    timelineTaskProfiles,
+  )
   const events = generateEvents(node, isCompiledComponent)
-  const children = node.children.length > 0 && !isCompiledComponent
-    ? generateNodeSequence(node.children, context)
+  const children = childNodes.length > 0 && !isCompiledComponent
+    ? generateNodeSequence(childNodes, context)
     : ''
   const slots = generateSlots(node, context, isCompiledComponent)
   const key = readAttr(node, ':key') ?? readAttr(node, 'key')
@@ -857,6 +901,191 @@ function generateSlotOutletScope(node: TemplateNode): string {
   }
 
   return entries.length > 0 ? `{${entries.join(',')}}` : '{}'
+}
+
+function isTimelineRootTag(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.Root'
+}
+
+function generateTimelineTaskProfilesProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const profileNodes = nodes.filter(node => node.tag === 'TimelineTaskProfile')
+  if (profileNodes.length === 0) return ''
+  return `taskProfiles:${generateTimelineTaskProfiles(profileNodes, context)}`
+}
+
+function mergePropsCode(base: string, extra: string): string {
+  if (!extra) return base
+  if (!base) return `{${extra}}`
+  return `${base.slice(0, -1)},${extra}}`
+}
+
+function validateTimelineTaskProfileNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (node.tag !== 'TimelineTaskProfile') {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-profile-root',
+        message: 'Timeline profile DSL поддерживает только top-level <TimelineTaskProfile>.',
+      })
+      continue
+    }
+
+    if (!readAttr(node, 'name')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-profile-name',
+        message: '<TimelineTaskProfile> требует статический name.',
+      })
+    }
+
+    validateTimelineTaskProfileChildren(node.children, diagnostics)
+  }
+}
+
+function validateTimelineTaskProfileChildren(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (!TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-profile-unsupported-node',
+        message: `TimelineTaskProfile пока поддерживает только Rect, Text и TextBlock. Получен <${node.tag}>.`,
+      })
+      continue
+    }
+    validateTimelineTaskProfileChildren(node.children, diagnostics)
+  }
+}
+
+function generateTimelineTaskProfiles(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const entries = nodes
+    .filter(node => node.tag === 'TimelineTaskProfile')
+    .map(node => {
+      const name = readAttr(node, 'name') ?? 'default'
+      const contract = readAttr(node, ':contract')
+        ? `,contract:${readAttr(node, ':contract')}`
+        : readAttr(node, 'contract')
+          ? `,contract:${serializeStaticAttr(readAttr(node, 'contract')!)}`
+          : ''
+
+      return `${quoteKey(name)}:{
+        schema:(__timelineTask) => {
+          const runtimeTask = __timelineTask;
+          const task = runtimeTask.item;
+          const group = runtimeTask.group?.item ?? null;
+          const width = runtimeTask.width;
+          const height = runtimeTask.height;
+          const x = runtimeTask.x;
+          const y = runtimeTask.y;
+          const selected = runtimeTask.isSelected;
+          const ctx = runtimeTask;
+          return ${generateTimelineProfileNodeSequence(node.children, context)};
+        }${contract}
+      }`
+    })
+
+  return `{defaultProfileId:'default',profiles:{${entries.join(',')}}}`
+}
+
+function generateTimelineProfileNodeSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  return `[${nodes.map(node => generateTimelineProfileNode(node, context)).join(',')}].flat().filter(Boolean)`
+}
+
+function generateTimelineProfileNode(node: TemplateNode, context: GenerateContext): string {
+  const condition = readAttr(node, 'if')
+  const schema = generateTimelineProfileSchema(node, context)
+  return condition ? `((${condition}) ? ${schema} : null)` : schema
+}
+
+function generateTimelineProfileSchema(node: TemplateNode, context: GenerateContext): string {
+  if (node.tag === 'Rect') {
+    return generateTimelineRectSchema(node)
+  }
+  if (node.tag === 'Text' || node.tag === 'TextBlock') {
+    return generateTimelineTextSchema(node)
+  }
+
+  context.diagnostics.push({
+    severity: 'error',
+    code: 'timeline-profile-unsupported-node',
+    message: `TimelineTaskProfile пока поддерживает только Rect, Text и TextBlock. Получен <${node.tag}>.`,
+  })
+  return 'null'
+}
+
+function generateTimelineRectSchema(node: TemplateNode): string {
+  const styleEntries = [
+    profileStyleEntry(node, 'background'),
+    profileStyleEntry(node, 'border'),
+    profileStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    `type:'rect'`,
+    `x:${profileAttr(node, 'x', '0')}`,
+    `y:${profileAttr(node, 'y', '0')}`,
+    `width:${profileAttr(node, 'width', 'width')}`,
+    `height:${profileAttr(node, 'height', 'height')}`,
+    ...profileCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineTextSchema(node: TemplateNode): string {
+  const styleEntries = [
+    profileStyleEntry(node, 'color'),
+    profileStyleEntry(node, 'font'),
+    profileStyleEntry(node, 'lineHeight'),
+    profileStyleEntry(node, 'padding'),
+    profileStyleEntry(node, 'align'),
+    profileStyleEntry(node, 'ellipsis'),
+    profileStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    `type:'text'`,
+    `text:${profileAttr(node, 'text', "''")}`,
+    `x:${profileAttr(node, 'x', '0')}`,
+    `y:${profileAttr(node, 'y', '0')}`,
+    `width:${profileAttr(node, 'width', 'width')}`,
+    `height:${profileAttr(node, 'height', 'height')}`,
+    ...profileCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+
+  return `{${entries.join(',')}}`
+}
+
+function profileCommonEntries(node: TemplateNode): Array<string> {
+  return [
+    profileEntry(node, 'active'),
+    profileEntry(node, 'clip'),
+    profileEntry(node, 'meta'),
+  ].filter(Boolean)
+}
+
+function profileStyleEntry(node: TemplateNode, name: string): string {
+  const value = profileAttr(node, name)
+  return value ? `${quoteKey(name)}:${value}` : ''
+}
+
+function profileEntry(node: TemplateNode, name: string): string {
+  const value = profileAttr(node, name)
+  return value ? `${quoteKey(name)}:${value}` : ''
+}
+
+function profileAttr(node: TemplateNode, name: string, fallback?: string): string {
+  const dynamic = readAttr(node, `:${name}`)
+  if (dynamic !== undefined) return dynamic
+  const staticValue = readAttr(node, name)
+  if (staticValue !== undefined) return serializeStaticAttr(staticValue)
+  if (Object.prototype.hasOwnProperty.call(node.attrs, name)) return 'true'
+  return fallback ?? ''
 }
 
 function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext): string {

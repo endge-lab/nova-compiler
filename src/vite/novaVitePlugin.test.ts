@@ -351,6 +351,79 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(result).toBeNull()
   })
 
+  it('extracts TimelineTaskProfile children from public Vue TimelineChart', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <script setup lang="ts">
+        const data = []
+        </script>
+
+        <template>
+          <TimelineChart :data="data" task-profile-by="status">
+            <TimelineTaskProfile name="planned" v-slot="{ task, width, height }">
+              <Rect :width="width" :height="height" background="#e8eef8" />
+              <TextBlock :text="task.title" :width="width - 24" :height="height" />
+            </TimelineTaskProfile>
+
+            <TimelineTaskProfile name="active" v-slot="{ task, width, height }">
+              <Rect :width="width" :height="height" background="#2563eb" />
+              <TextBlock :text="task.title" :width="width - 24" :height="height" color="#ffffff" />
+            </TimelineTaskProfile>
+          </TimelineChart>
+        </template>
+      `,
+      sourcePath('src/pages/Timeline.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('const __timelineTaskProfiles0 = {defaultProfileId:\'default\',profiles:{')
+    expect(code).toContain(':compiled-task-profiles="__timelineTaskProfiles0"')
+    expect(code).not.toContain('<TimelineTaskProfile')
+    expect(code).toContain('taskProfileBy="status"')
+    expect(code).toContain('schema:(__timelineTask) =>')
+    expect(code).toContain("type:'rect'")
+    expect(code).toContain("type:'text'")
+  })
+
+  it('passes TimelineTaskProfile children to TimelineChart.Root inside NovaCanvas DSL', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <script setup lang="ts">
+        const data = []
+        </script>
+
+        <template>
+          <NovaCanvas>
+            <TimelineChart.Root :data="data" task-profile-by="status">
+              <TimelineTaskProfile name="planned" v-slot="{ task, width, height }">
+                <Rect :width="width" :height="height" background="#e8eef8" />
+                <TextBlock :text="task.title" :width="width - 24" :height="height" />
+              </TimelineTaskProfile>
+            </TimelineChart.Root>
+          </NovaCanvas>
+        </template>
+      `,
+      sourcePath('src/pages/TimelineRoot.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('taskProfiles:{defaultProfileId:\'default\',profiles:{')
+    expect(compiled).toContain('planned:{')
+    expect(compiled).toContain("type:'rect'")
+    expect(compiled).toContain("type:'text'")
+    expect(compiled).not.toContain('type:"TimelineTaskProfile"')
+  })
+
   it('does not parse ordinary Vue templates without NovaCanvas', async () => {
     const plugin = novaVitePlugin()
 

@@ -4,7 +4,7 @@ import type { Plugin } from 'vite'
 import { baseParse, NodeTypes } from '@vue/compiler-dom'
 import { parse as parseVueSfc } from '@vue/compiler-sfc'
 import { compileNovaCss, generateNovaCssModule } from '@/css/nova-css-compiler'
-import { compileNovaSfc } from '@/sfc/nova-sfc-compiler'
+import { compileNovaSfc, compileTimelineTaskProfilesSource } from '@/sfc/nova-sfc-compiler'
 
 export interface NovaGeneratedOutputOptions {
   enabled?: boolean
@@ -105,8 +105,22 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       if (cleanId.endsWith('.vue') && !isVueSubBlockRequest(id)) {
         clearVueInlineVirtualModules(virtualModules, cleanId)
         const novaStyles = extractVueNovaStyles(source)
-        const transformed = transformVueNovaCanvasTemplates(novaStyles.source, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.styles)
-        if (transformed) {
+        let transformed = novaStyles.source
+        let hasTransform = false
+
+        const timelineProfiles = transformVueTimelineChartProfiles(transformed, cleanId, options.includeDiagnostics ?? true)
+        if (timelineProfiles) {
+          transformed = timelineProfiles
+          hasTransform = true
+        }
+
+        const novaCanvas = transformVueNovaCanvasTemplates(transformed, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.styles)
+        if (novaCanvas) {
+          transformed = novaCanvas
+          hasTransform = true
+        }
+
+        if (hasTransform) {
           writeGeneratedOutput(generatedOutput, `${cleanId}__nova_template_transform`, transformed)
           return {
             code: transformed,
@@ -212,6 +226,62 @@ function transformVueNovaCanvasTemplates(
   return injectVueScriptSetupImports(applyReplacements(source, replacements), imports.join('\n'))
 }
 
+function transformVueTimelineChartProfiles(
+  source: string,
+  id: string,
+  includeDiagnostics: boolean,
+): string | null {
+  if (!hasVueTimelineChartProfileSource(source)) return null
+
+  const declarations: Array<string> = []
+  const replacements: Array<Replacement> = []
+  let index = 0
+
+  const sfc = parseVueSfc(source, { filename: id })
+  const template = sfc.descriptor.template
+  if (!template) return null
+
+  const ast = baseParse(template.content)
+  const templateOffset = template.loc.start.offset
+
+  walkVueTemplateElements(ast, node => {
+    if (node.tag !== 'TimelineChart') return
+    if (!Array.isArray(node.children)) return
+
+    const profileChildren = node.children.filter((child: any) => isTimelineTaskProfileVueNode(child))
+    if (profileChildren.length === 0) return
+
+    const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
+    const result = compileTimelineTaskProfilesSource(profilesSource)
+    emitDiagnostics(id, result.diagnostics, includeDiagnostics)
+    throwOnErrors(result.diagnostics)
+
+    const constName = `__timelineTaskProfiles${index}`
+    declarations.push(`const ${constName} = ${result.code};`)
+
+    const nodeSource = node.loc.source
+    const openingEndInNode = nodeSource.indexOf('>') + 1
+    const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
+    const openingWithProfiles = openingSource.replace(/>$/, ` :compiled-task-profiles="${constName}">`)
+    const children = node.children
+      .filter((child: any) => !isTimelineTaskProfileVueNode(child))
+      .map((child: any) => child.loc.source)
+      .join('\n')
+      .trim()
+    const replacement = `${openingWithProfiles}${children ? `\n${children}\n` : '\n'}</${node.tag}>`
+
+    replacements.push({
+      start: templateOffset + node.loc.start.offset,
+      end: templateOffset + node.loc.end.offset,
+      value: replacement,
+    })
+    index += 1
+  })
+
+  if (replacements.length === 0) return null
+  return injectVueScriptSetupImports(applyReplacements(source, replacements), declarations.join('\n'))
+}
+
 function extractVueNovaStyles(source: string): VueNovaStyleTransform {
   const styles: Array<string> = []
   const transformed = source.replace(/<style\b([^>]*)>([\s\S]*?)<\/style>/gi, (raw: string, attrsSource: string) => {
@@ -276,6 +346,14 @@ function walkVueTemplateElements(node: any, visit: (node: any) => void): void {
 
 function hasVueNovaCanvasSource(source: string): boolean {
   return source.includes('<NovaCanvas')
+}
+
+function hasVueTimelineChartProfileSource(source: string): boolean {
+  return source.includes('<TimelineChart') && source.includes('<TimelineTaskProfile')
+}
+
+function isTimelineTaskProfileVueNode(node: any): boolean {
+  return node.type === NodeTypes.ELEMENT && node.tag === 'TimelineTaskProfile'
 }
 
 function isNamedVueTemplate(node: any): boolean {
