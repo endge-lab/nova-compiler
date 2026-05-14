@@ -102,6 +102,39 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('__novaFor(5).flatMap((i, index)')
   })
 
+  it('normalizes kebab-case DSL props to camelCase schema props', () => {
+    const result = compileNovaSfc(`
+      <script setup>
+      const props = defineProps()
+      </script>
+      <template>
+        <Root>
+          <Flex justify-content="center" :align-items="props.align" row-gap="12" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('justifyContent:"center"')
+    expect(result.code).toContain('alignItems:props.align')
+    expect(result.code).toContain('rowGap:12')
+    expect(result.code).not.toContain('"justify-content"')
+    expect(result.code).not.toContain('"align-items"')
+    expect(result.code).not.toContain('"row-gap"')
+  })
+
+  it('reports conflicting camelCase and kebab-case aliases on one DSL node', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Flex justifyContent="start" justify-content="center" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics.some(item => item.code === 'duplicate-prop-alias')).toBe(true)
+  })
+
   it('reports legacy v-if/v-for as unsupported directives', () => {
     const result = compileNovaSfc(`
       <template>

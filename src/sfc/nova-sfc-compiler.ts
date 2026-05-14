@@ -1120,7 +1120,10 @@ function generateProps(
   const staticClass = readAttr(node, 'class')
   const dynamicClass = readAttr(node, ':class')
   const attrs = readAttr(node, ':attrs') ?? readAttr(node, 'attrs')
-  const hasExplicitStyleSheet = readAttr(node, ':styleSheet') || readAttr(node, 'styleSheet')
+  const hasExplicitStyleSheet = readAttr(node, ':styleSheet')
+    || readAttr(node, 'styleSheet')
+    || readAttr(node, ':style-sheet')
+    || readAttr(node, 'style-sheet')
 
   if (staticClass || dynamicClass) {
     props.push(`className:[${staticClass ? JSON.stringify(staticClass) : 'null'}, ${dynamicClass ?? 'null'}].filter(Boolean).join(' ')`)
@@ -1157,11 +1160,15 @@ function generateProps(
     ) continue
 
     if (name.startsWith(':')) {
-      props.push(`${quoteKey(name.slice(1))}:${value}`)
+      const propName = normalizeDslPropName(name.slice(1))
+      if (hasConflictingPropAlias(node, name, propName, context)) continue
+      props.push(`${quoteKey(propName)}:${value}`)
       continue
     }
 
-    props.push(`${quoteKey(name)}:${serializeStaticAttr(value)}`)
+    const propName = normalizeDslPropName(name)
+    if (hasConflictingPropAlias(node, name, propName, context)) continue
+    props.push(`${quoteKey(propName)}:${serializeStaticAttr(value)}`)
   }
 
   if (!isCompiledComponent) {
@@ -1185,6 +1192,37 @@ function generateEvents(node: TemplateNode, isCompiledComponent: boolean): strin
     events.push(`${quoteKey(eventName)}:${generateHandler(value)}`)
   }
   return events.length > 0 ? `{${events.join(',')}}` : ''
+}
+
+function normalizeDslPropName(name: string): string {
+  return name.includes('-')
+    ? name.replace(/-([a-zA-Z0-9])/g, (_match, char: string) => char.toUpperCase())
+    : name
+}
+
+function hasConflictingPropAlias(
+  node: TemplateNode,
+  rawName: string,
+  propName: string,
+  context: GenerateContext,
+): boolean {
+  const rawBaseName = rawName.startsWith(':') ? rawName.slice(1) : rawName
+
+  for (const existingName of Object.keys(node.attrs)) {
+    if (existingName === rawName) break
+    const existingBaseName = existingName.startsWith(':') ? existingName.slice(1) : existingName
+    if (normalizeDslPropName(existingBaseName) !== propName) continue
+    if (existingBaseName === rawBaseName) continue
+
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'duplicate-prop-alias',
+      message: `Prop "${rawBaseName}" конфликтует с "${existingBaseName}". Используйте только одну форму имени.`,
+    })
+    return true
+  }
+
+  return false
 }
 
 function generateHandler(value: string | true): string {

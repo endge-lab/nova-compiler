@@ -38,4 +38,26 @@ describe('Nova CSS compiler', () => {
     expect(result.diagnostics.some(item => item.code === 'invalid-number')).toBe(true)
     expect(result.diagnostics.some(item => item.code === 'unknown-declaration')).toBe(true)
   })
+
+  it('normalizes kebab-case declarations to canonical camelCase declarations', () => {
+    const result = compileNovaCss(`
+      Flex.panel {
+        font-size: 18;
+        line-height: 24;
+        border-radius: 14;
+        row-gap: 8;
+        column-gap: 12;
+        accent-color: #14b8a6;
+      }
+    `)
+
+    expect(result.ok).toBe(true)
+    const declarations = result.styleSheet?.rules[0]?.declarations
+    expect(declarations?.inheritedText?.fontSize).toBe(18)
+    expect(declarations?.inheritedText?.lineHeight).toBe(24)
+    expect(declarations?.box?.border?.radius).toBe(14)
+    expect(declarations?.layout?.rowGap).toBe(8)
+    expect(declarations?.layout?.columnGap).toBe(12)
+    expect(declarations?.visual?.accentColor).toBe('#14b8a6')
+  })
 })
