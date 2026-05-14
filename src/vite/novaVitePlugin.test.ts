@@ -382,7 +382,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain('const __timelineTaskProfiles0 = {defaultProfileId:\'default\',profiles:{')
     expect(code).toContain(':compiled-task-profiles="__timelineTaskProfiles0"')
     expect(code).not.toContain('<TimelineTaskProfile')
-    expect(code).toContain('taskProfileBy="status"')
+    expect(code).toContain('task-profile-by="status"')
     expect(code).toContain('schema:(__timelineTask) =>')
     expect(code).toContain("type:'rect'")
     expect(code).toContain("type:'text'")

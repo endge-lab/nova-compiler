@@ -174,6 +174,42 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('select:(...args) => (emit')
   })
 
+  it('keeps native events in schema events and maps UI Kit semantic events to callback props', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Widget from './Widget.nova'
+      const props = defineProps()
+      function clickHandler(event) {}
+      function pressHandler(event) {}
+      function valueHandler(value) {}
+      function scrollEndHandler(state) {}
+      function resizeStartHandler(payload) {}
+      </script>
+
+      <template>
+        <Root>
+          <Button @click="clickHandler" @press="pressHandler" />
+          <Slider @value-change="valueHandler" @drag-start="valueHandler" />
+          <ScrollArea @scroll-end="scrollEndHandler" />
+          <SplitPane @resize-start="resizeStartHandler" />
+          <Widget @press="pressHandler" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/Events.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('events:{click:clickHandler}')
+    expect(result.code).toContain('onPress:pressHandler')
+    expect(result.code).toContain('onValueChange:valueHandler')
+    expect(result.code).toContain('onDragStart:valueHandler')
+    expect(result.code).toContain('onScrollEnd:scrollEndHandler')
+    expect(result.code).toContain('onResizeStart:resizeStartHandler')
+    expect(result.code).toContain('type:Widget')
+    expect(result.code).toContain('events:{press:pressHandler}')
+  })
+
   it('compiles imported class component symbols and aliases as constructor types', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">

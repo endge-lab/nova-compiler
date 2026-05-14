@@ -118,6 +118,54 @@ const UI_KIT_TAGS = new Set([
   'Tooltip',
   'SegmentedControl',
   'Panel',
+  'SpeedDial',
+  'Dock',
+  'Carousel',
+  'Galleria',
+  'ImagePreview',
+  'ImageCompare',
+  'Skeleton',
+  'ProgressBar',
+  'ProgressSpinner',
+  'MeterGroup',
+  'Knob',
+  'ToggleSwitch',
+  'RadioButton',
+  'Rating',
+  'SelectButton',
+  'Dialog',
+  'Drawer',
+  'Popover',
+  'Toast',
+  'Message',
+  'BlockUI',
+  'Accordion',
+  'Fieldset',
+  'Tabs',
+  'Stepper',
+])
+
+const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
+  ['press', 'onPress'],
+  ['change', 'onChange'],
+  ['value-change', 'onValueChange'],
+  ['input', 'onInput'],
+  ['open-change', 'onOpenChange'],
+  ['show', 'onShow'],
+  ['hide', 'onHide'],
+  ['scroll', 'onScroll'],
+  ['scroll-start', 'onScrollStart'],
+  ['scroll-end', 'onScrollEnd'],
+  ['thumb-click', 'onThumbClick'],
+  ['track-click', 'onTrackClick'],
+  ['scrollbar-click', 'onScrollbarClick'],
+  ['resize-start', 'onResizeStart'],
+  ['resize', 'onResize'],
+  ['resize-end', 'onResizeEnd'],
+  ['drag-start', 'onDragStart'],
+  ['drag-end', 'onDragEnd'],
+  ['step-change', 'onStepChange'],
+  ['remove', 'onRemove'],
 ])
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
@@ -1025,7 +1073,7 @@ function generateTimelineRectSchema(node: TemplateNode): string {
     profileStyleEntry(node, 'opacity'),
   ].filter(Boolean)
   const entries = [
-    `type:'rect'`,
+    'type:\'rect\'',
     `x:x + (${profileAttr(node, 'x', '0')})`,
     `y:y + (${profileAttr(node, 'y', '0')})`,
     `width:${profileAttr(node, 'width', 'width')}`,
@@ -1048,7 +1096,7 @@ function generateTimelineTextSchema(node: TemplateNode): string {
     profileStyleEntry(node, 'opacity'),
   ].filter(Boolean)
   const entries = [
-    `type:'text'`,
+    'type:\'text\'',
     `text:${profileAttr(node, 'text', "''")}`,
     `x:x + (${profileAttr(node, 'x', '0')})`,
     `y:y + (${profileAttr(node, 'y', '0')})`,
@@ -1175,8 +1223,8 @@ function generateProps(
     for (const [name, value] of Object.entries(node.attrs)) {
       if (!name.startsWith('@')) continue
       const eventName = name.slice(1)
-      if (eventName === 'press') props.push(`onPress:${generateHandler(value)}`)
-      if (eventName === 'change') props.push(`onChange:${generateHandler(value)}`)
+      const propName = resolveUiKitSemanticEventProp(node.tag, eventName)
+      if (propName) props.push(`${propName}:${generateHandler(value)}`)
     }
   }
 
@@ -1188,10 +1236,15 @@ function generateEvents(node: TemplateNode, isCompiledComponent: boolean): strin
   for (const [name, value] of Object.entries(node.attrs)) {
     if (!name.startsWith('@')) continue
     const eventName = name.slice(1)
-    if (!isCompiledComponent && (eventName === 'press' || eventName === 'change')) continue
+    if (!isCompiledComponent && resolveUiKitSemanticEventProp(node.tag, eventName)) continue
     events.push(`${quoteKey(eventName)}:${generateHandler(value)}`)
   }
   return events.length > 0 ? `{${events.join(',')}}` : ''
+}
+
+function resolveUiKitSemanticEventProp(tag: string, eventName: string): string | null {
+  if (!UI_KIT_TAGS.has(tag)) return null
+  return UI_KIT_SEMANTIC_EVENT_PROPS.get(eventName) ?? null
 }
 
 function normalizeDslPropName(name: string): string {
