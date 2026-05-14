@@ -20,6 +20,7 @@ interface VirtualNovaModule {
   source: string
   filename: string
   ownerFile: string
+  versionedId?: string
 }
 
 interface ParsedAttr {
@@ -71,6 +72,21 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       const virtualModule = virtualModules.get(stripViteQuery(id))
       if (!virtualModule) return null
       return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput)
+    },
+
+    handleHotUpdate(context) {
+      const ownerFile = stripViteQuery(context.file)
+      for (const [id, virtualModule] of virtualModules.entries()) {
+        if (virtualModule.ownerFile !== ownerFile) continue
+
+        const moduleIds = [id, virtualModule.versionedId].filter(Boolean) as Array<string>
+        for (const moduleId of moduleIds) {
+          const module = context.server.moduleGraph.getModuleById(moduleId)
+          if (module) context.server.moduleGraph.invalidateModule(module)
+        }
+      }
+
+      return undefined
     },
 
     transform(source, id) {
@@ -200,6 +216,7 @@ function transformVueNovaCanvasTemplates(
     })
 
     const importModuleSource = withVirtualVersion(importSource, virtualVersionSource)
+    virtualModules.get(importSource)!.versionedId = importModuleSource
     imports.push(`import ${componentName} from ${JSON.stringify(importModuleSource)};`)
 
     const refNames = collectNovaTemplateRefs(defaultSource)
@@ -207,7 +224,7 @@ function transformVueNovaCanvasTemplates(
     const bindingAttrs = normalizedTemplate.bindings
       .map(binding => ` :${toKebabCase(binding.propName)}="${binding.expression}"`)
       .join('')
-    const marker = `<template #nova><nova-template :component="${componentName}" source="${escapeAttr(importSource)}" debug-id="${escapeAttr(debugId)}"${refsAttr}${bindingAttrs} /></template>`
+    const marker = `<template #nova><nova-template :component="${componentName}" source="${escapeAttr(importModuleSource)}" debug-id="${escapeAttr(debugId)}"${refsAttr}${bindingAttrs} /></template>`
     const namedSlots = node.children
       .filter((child: any) => isNamedVueTemplate(child))
       .map((child: any) => child.loc.source)

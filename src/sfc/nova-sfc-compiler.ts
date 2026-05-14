@@ -1026,8 +1026,8 @@ function generateTimelineRectSchema(node: TemplateNode): string {
   ].filter(Boolean)
   const entries = [
     `type:'rect'`,
-    `x:${profileAttr(node, 'x', '0')}`,
-    `y:${profileAttr(node, 'y', '0')}`,
+    `x:x + (${profileAttr(node, 'x', '0')})`,
+    `y:y + (${profileAttr(node, 'y', '0')})`,
     `width:${profileAttr(node, 'width', 'width')}`,
     `height:${profileAttr(node, 'height', 'height')}`,
     ...profileCommonEntries(node),
@@ -1050,8 +1050,8 @@ function generateTimelineTextSchema(node: TemplateNode): string {
   const entries = [
     `type:'text'`,
     `text:${profileAttr(node, 'text', "''")}`,
-    `x:${profileAttr(node, 'x', '0')}`,
-    `y:${profileAttr(node, 'y', '0')}`,
+    `x:x + (${profileAttr(node, 'x', '0')})`,
+    `y:y + (${profileAttr(node, 'y', '0')})`,
     `width:${profileAttr(node, 'width', 'width')}`,
     `height:${profileAttr(node, 'height', 'height')}`,
     ...profileCommonEntries(node),
