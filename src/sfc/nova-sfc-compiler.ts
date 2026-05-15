@@ -1397,6 +1397,7 @@ function generateModule(options: {
   const setupNames = new Set(options.setup.names)
   const topLevelNames = options.setup.topLevelNames
   const implicitTemplateLocals = [
+    ['canvas', '{ width: this.width, height: this.height }'],
     ['props', 'this.props'],
     ['emit', 'this.emit.bind(this)'],
     ['width', 'this.width'],

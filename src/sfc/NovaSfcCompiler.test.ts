@@ -102,6 +102,21 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('__novaFor(5).flatMap((i, index)')
   })
 
+  it('exposes canvas namespace for explicit root sizing', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root :width="canvas.width" :height="canvas.height">
+          <TextBlock text="demo" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('const canvas = { width: this.width, height: this.height };')
+    expect(result.code).toContain('width:canvas.width')
+    expect(result.code).toContain('height:canvas.height')
+  })
+
   it('normalizes kebab-case DSL props to camelCase schema props', () => {
     const result = compileNovaSfc(`
       <script setup>

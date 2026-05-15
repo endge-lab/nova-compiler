@@ -191,19 +191,23 @@ function transformVueNovaCanvasTemplates(
     if (node.tag !== 'NovaCanvas') return
     if (!Array.isArray(node.children)) return
 
+    const novaSlot = node.children.find((child: any) => getNamedVueTemplateName(child) === 'nova')
     const defaultChildren = node.children.filter((child: any) => (
       !isNamedVueTemplate(child)
       && !isNovaTemplateMarker(child)
       && !isEmptyTextNode(child)
     ))
-    if (defaultChildren.length === 0) return
+    const novaChildren = novaSlot
+      ? novaSlot.children.filter((child: any) => !isEmptyTextNode(child))
+      : defaultChildren
+    if (novaChildren.length === 0) return
 
     const componentName = `__NovaTemplate${index}`
     const debugId = `${stripViteQuery(id)}__nova_template_${index}`
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
-    const rawDefaultSource = defaultChildren.map((child: any) => child.loc.source).join('\n').trim()
+    const rawDefaultSource = novaChildren.map((child: any) => child.loc.source).join('\n').trim()
     const normalizedTemplate = normalizeInlineVueTemplateBindings(rawDefaultSource)
     const defaultSource = normalizedTemplate.source
     const importSource = `virtual:nova-template:${stripViteQuery(id)}:${index}.nova`
@@ -226,7 +230,7 @@ function transformVueNovaCanvasTemplates(
       .join('')
     const marker = `<template #nova><nova-template :component="${componentName}" source="${escapeAttr(importModuleSource)}" debug-id="${escapeAttr(debugId)}"${refsAttr}${bindingAttrs} /></template>`
     const namedSlots = node.children
-      .filter((child: any) => isNamedVueTemplate(child))
+      .filter((child: any) => isNamedVueTemplate(child) && getNamedVueTemplateName(child) !== 'nova')
       .map((child: any) => child.loc.source)
       .join('\n')
     const replacement = `${openingSource}\n${marker}${namedSlots ? `\n${namedSlots}` : ''}\n</${node.tag}>`
@@ -379,6 +383,12 @@ function isNamedVueTemplate(node: any): boolean {
     && node.props?.some((prop: any) => prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot')
 }
 
+function getNamedVueTemplateName(node: any): string | null {
+  if (!isNamedVueTemplate(node)) return null
+  const slot = node.props.find((prop: any) => prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot')
+  return typeof slot?.arg?.content === 'string' ? slot.arg.content : 'default'
+}
+
 function isEmptyTextNode(node: any): boolean {
   return node.type === NodeTypes.TEXT && !node.content.trim()
 }
@@ -503,7 +513,7 @@ function collectExpressionLocals(source: string, locals: Set<string>): void {
 }
 
 function isImplicitNovaTemplateBinding(name: string): boolean {
-  return ['props', 'width', 'height', 'styleSheet', 'true', 'false', 'null', 'undefined'].includes(name)
+  return ['canvas', 'props', 'width', 'height', 'styleSheet', 'true', 'false', 'null', 'undefined'].includes(name)
 }
 
 function toKebabCase(value: string): string {

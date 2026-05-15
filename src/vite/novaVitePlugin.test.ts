@@ -305,6 +305,31 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).not.toContain('<TextBlock text="Demo" />')
   })
 
+  it('compiles explicit #nova slot DSL and exposes canvas namespace', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">const selected = true</script><template><NovaCanvas><template #nova="{ canvas }"><Root :width="canvas.width" :height="canvas.height"><TextBlock if="selected" text="Demo" /></Root></template><template #overlay><button>Update</button></template></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain(':selected="selected"')
+    expect(code).toContain('<template #overlay><button>Update</button></template>')
+    expect(code).toContain('<nova-template :component="__NovaTemplate0"')
+    expect(code).not.toContain('#nova="{ canvas }"')
+
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('const canvas = { width: this.width, height: this.height };')
+    expect(compiled).toContain('width:canvas.width')
+    expect(compiled).toContain('height:canvas.height')
+    expect(compiled).toContain('props.selected')
+  })
+
   it('compiles Component src through default-slot Nova DSL and forwards attrs to marker props', async () => {
     const plugin = novaVitePlugin()
 
