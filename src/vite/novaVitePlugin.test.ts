@@ -257,6 +257,28 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).toContain('onPress:props.novaHandlerOnSelect')
   })
 
+  it('normalizes bound control-flow sources in inline NovaCanvas DSL', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">const rows = []; const selected = true</script><template><NovaCanvas><TextBlock :for="row in rows" :key="row.id" :if="selected" :text="row.title" /></NovaCanvas></template>',
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain(':rows="rows"')
+    expect(code).toContain(':selected="selected"')
+
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('__novaFor(props.rows).flatMap((row, index)')
+    expect(compiled).toContain('(props.selected) ?')
+    expect(compiled).toContain('row.title')
+  })
+
   it('keeps legacy v-if/v-for unsupported in inline NovaCanvas DSL', async () => {
     const plugin = novaVitePlugin()
 

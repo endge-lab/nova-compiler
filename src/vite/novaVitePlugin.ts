@@ -426,7 +426,7 @@ function normalizeInlineVueTemplateBindings(templateSource: string): NormalizedI
   }
 
   let source = templateSource.replace(
-    /(for="[^"]+\s(?:in|of)\s+)([A-Za-z_$][\w$]*)(")/g,
+    /((?::for|for)="[^"]+\s(?:in|of)\s+)([A-Za-z_$][\w$]*)(")/g,
     (match, prefix: string, name: string, suffix: string) => {
       if (isImplicitNovaTemplateBinding(name) || locals.has(name)) return match
       addBinding(name)
@@ -469,6 +469,11 @@ function collectInlineNovaTemplateLocals(templateSource: string): Set<string> {
         if (prop.type !== NodeTypes.DIRECTIVE) continue
 
         if (prop.name === 'for' && prop.exp?.content) {
+          collectVForLocals(prop.exp.content, locals)
+          continue
+        }
+
+        if (prop.name === 'bind' && prop.arg?.content === 'for' && prop.exp?.content) {
           collectVForLocals(prop.exp.content, locals)
           continue
         }

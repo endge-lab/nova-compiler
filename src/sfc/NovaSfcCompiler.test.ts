@@ -102,6 +102,47 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('__novaFor(5).flatMap((i, index)')
   })
 
+  it('prefers Vue-like bound control-flow syntax and keeps legacy syntax working', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <TextBlock :if="props.ready" text="ready" />
+          <TextBlock :else-if="props.pending" text="pending" />
+          <TextBlock else text="empty" />
+          <Button :for="item in props.items" :key="item.id" :text="item.title" />
+          <Surface if="props.legacy" background="#ffffff" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('(props.ready) ?')
+    expect(result.code).toContain('(props.pending) ?')
+    expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
+    expect(result.code).toContain('(props.legacy) ?')
+  })
+
+  it('compiles Scenes and Scene DSL tags to core Nova scene schema types', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Scenes :active="props.activeScene" strategy="keep-alive">
+          <Scene id="red">
+            <Root id="red-root" />
+          </Scene>
+          <Scene id="blue">
+            <Root id="blue-root" />
+          </Scene>
+        </Scenes>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('type:"nova.scenes"')
+    expect(result.code).toContain('type:"nova.scene"')
+    expect(result.code).toContain('active:props.activeScene')
+    expect(result.code).toContain('strategy:"keep-alive"')
+  })
+
   it('exposes canvas namespace for explicit root sizing', () => {
     const result = compileNovaSfc(`
       <template>

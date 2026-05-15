@@ -171,6 +171,10 @@ const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
 const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
 const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Text', 'TextBlock'])
+const CORE_DSL_TAGS: Record<string, string> = {
+  Scenes: 'nova.scenes',
+  Scene: 'nova.scene',
+}
 
 export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Root: 'packages/@endge-nova-ui-kit/src/components/Root/Root.ts',
@@ -721,6 +725,7 @@ function validateTemplateNodeList(
 
     if (!isSlotOutlet
       && !UI_KIT_TAGS.has(node.tag)
+      && !CORE_DSL_TAGS[node.tag]
       && !PRIMITIVE_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_MARKER_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
@@ -768,7 +773,7 @@ function validateTemplateNodeList(
       })
     }
 
-    const isElseBranch = !!readAttr(node, 'else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'else')
+    const isElseBranch = !!readAttr(node, 'else-if') || hasControlElseAttr(node)
     if (isElseBranch && !previousAcceptsElse) {
       diagnostics.push({
         severity: 'error',
@@ -790,7 +795,7 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]
-    if (readAttr(node, 'else-if') || Object.prototype.hasOwnProperty.call(node.attrs, 'else')) continue
+    if (readAttr(node, 'else-if') || hasControlElseAttr(node)) continue
 
     const condition = readAttr(node, 'if')
     if (!condition) {
@@ -804,7 +809,7 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
     while (cursor < nodes.length) {
       const next = nodes[cursor]
       const elseIf = readAttr(next, 'else-if')
-      const hasElse = Object.prototype.hasOwnProperty.call(next.attrs, 'else')
+      const hasElse = hasControlElseAttr(next)
       if (!elseIf && !hasElse) break
 
       if (elseIf) {
@@ -1144,6 +1149,7 @@ function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext)
   }
 
   if (context.importedRuntimeSymbols.has(node.tag)) return node.tag
+  if (CORE_DSL_TAGS[node.tag]) return JSON.stringify(CORE_DSL_TAGS[node.tag])
   if (UI_KIT_TAGS.has(node.tag)) return `__NovaUIKit.${node.tag}`
   return JSON.stringify(node.tag)
 }
@@ -1285,6 +1291,11 @@ function generateHandler(value: string | true): string {
 }
 
 function readAttr(node: TemplateNode, name: string): string | undefined {
+  if (name === 'if' || name === 'else-if' || name === 'for') {
+    const dynamicValue = node.attrs[`:${name}`]
+    if (typeof dynamicValue === 'string') return dynamicValue
+  }
+
   const value = node.attrs[name]
   return typeof value === 'string' ? value : undefined
 }
@@ -1300,7 +1311,17 @@ function parseForExpression(source: string): { item: string; index: string; sour
 }
 
 function isControlFlowAttr(name: string): boolean {
-  return name === 'if' || name === 'else-if' || name === 'else' || name === 'for'
+  return name === 'if'
+    || name === ':if'
+    || name === 'else-if'
+    || name === ':else-if'
+    || name === 'else'
+    || name === 'for'
+    || name === ':for'
+}
+
+function hasControlElseAttr(node: TemplateNode): boolean {
+  return Object.prototype.hasOwnProperty.call(node.attrs, 'else')
 }
 
 function createTemplateMetadata(
