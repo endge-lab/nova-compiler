@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@babel/parser": "^7.29.3",
-    "@endge/nova": "workspace:*",
-    "@endge/nova-ui-kit": "workspace:*",
+    "@endge/nova": "^0.5.1",
+    "@endge/nova-ui-kit": "^0.6.0",
     "@vue/compiler-dom": "^3.5.34",
     "@vue/compiler-sfc": "^3.5.34"
   },
