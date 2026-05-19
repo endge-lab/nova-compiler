@@ -63,17 +63,26 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     name: 'endge-nova-compiler',
     enforce: 'pre',
 
+    /**
+     * Нормализует и возвращает итоговое значение текущего класса.
+     */
     resolveId(id) {
       if (virtualModules.has(stripViteQuery(id))) return id
       return null
     },
 
+    /**
+     * Загружает данные или ресурсы текущего класса.
+     */
     load(id) {
       const virtualModule = virtualModules.get(stripViteQuery(id))
       if (!virtualModule) return null
       return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput)
     },
 
+    /**
+     * Обрабатывает runtime-событие текущего класса.
+     */
     handleHotUpdate(context) {
       const ownerFile = stripViteQuery(context.file)
       for (const [id, virtualModule] of virtualModules.entries()) {
@@ -89,6 +98,9 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       return undefined
     },
 
+    /**
+     * Преобразует значение в целевую модель текущего класса.
+     */
     transform(source, id) {
       const cleanId = stripViteQuery(id)
 

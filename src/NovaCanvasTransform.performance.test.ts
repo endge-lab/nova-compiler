@@ -120,6 +120,9 @@ function createVueControlFlowSource(): string {
 async function runTransform(plugin: Plugin, code: string, id: string): Promise<unknown> {
   const transform = plugin.transform
   const context = {
+    /**
+     * Выполняет действие addWatchFile в рамках ответственности текущего класса.
+     */
     addWatchFile() {},
   }
 
@@ -133,6 +136,9 @@ async function runTransform(plugin: Plugin, code: string, id: string): Promise<u
 async function runLoad(plugin: Plugin, id: string): Promise<unknown> {
   const load = plugin.load
   const context = {
+    /**
+     * Выполняет действие addWatchFile в рамках ответственности текущего класса.
+     */
     addWatchFile() {},
   }
 

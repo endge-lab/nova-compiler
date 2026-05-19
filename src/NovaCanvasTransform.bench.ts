@@ -29,6 +29,9 @@ describe('NovaCanvas default-slot compiler benchmarks', () => {
 async function runTransform(plugin: Plugin, code: string, id: string): Promise<unknown> {
   const transform = plugin.transform
   const context = {
+    /**
+     * Выполняет действие addWatchFile в рамках ответственности текущего класса.
+     */
     addWatchFile() {},
   }
 

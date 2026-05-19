@@ -534,6 +534,9 @@ describe('Nova Vite plugin generated debug output', () => {
 async function runTransform(plugin: Plugin, source: string, id: string): Promise<unknown> {
   const transform = plugin.transform
   const context = {
+    /**
+     * Выполняет действие addWatchFile в рамках ответственности текущего класса.
+     */
     addWatchFile() {},
   }
 
@@ -547,6 +550,9 @@ async function runTransform(plugin: Plugin, source: string, id: string): Promise
 async function runLoad(plugin: Plugin, id: string): Promise<unknown> {
   const load = plugin.load
   const context = {
+    /**
+     * Выполняет действие addWatchFile в рамках ответственности текущего класса.
+     */
     addWatchFile() {},
   }
 
