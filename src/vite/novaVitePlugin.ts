@@ -136,7 +136,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
         let transformed = novaStyles.source
         let hasTransform = false
 
-        const timelineProfiles = transformVueTimelineChartProfiles(transformed, cleanId, options.includeDiagnostics ?? true)
+        const timelineProfiles = transformVueTimelineChartProfiles(transformed, cleanId, this, options.includeDiagnostics ?? true)
         if (timelineProfiles) {
           transformed = timelineProfiles
           hasTransform = true
@@ -262,6 +262,7 @@ function transformVueNovaCanvasTemplates(
 function transformVueTimelineChartProfiles(
   source: string,
   id: string,
+  context: { addWatchFile: (id: string) => void },
   includeDiagnostics: boolean,
 ): string | null {
   if (!hasVueTimelineChartProfileSource(source)) return null
@@ -285,7 +286,10 @@ function transformVueTimelineChartProfiles(
     if (profileChildren.length === 0) return
 
     const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
-    const result = compileTimelineTaskProfilesSource(profilesSource)
+    const result = compileTimelineTaskProfilesSource(profilesSource, {
+      filename: id,
+      resolveImport: (request, from) => resolveSourceImport(request, from, context),
+    })
     emitDiagnostics(id, result.diagnostics, includeDiagnostics)
     throwOnErrors(result.diagnostics)
 

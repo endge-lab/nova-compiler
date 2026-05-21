@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileNovaSfc } from '@/sfc/nova-sfc-compiler'
+import { compileNovaSfc, compileTimelineTaskProfilesSource } from '@/sfc/nova-sfc-compiler'
 
 describe('Nova SFC compiler', () => {
   it('generates a NovaNode class with setup, keyed loop and scoped style asset', () => {
@@ -120,6 +120,61 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('(props.pending) ?')
     expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
     expect(result.code).toContain('(props.legacy) ?')
+  })
+
+  it('inlines external template src files without creating component nodes', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <template src="./body.nova" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/Screen.nova',
+      resolveImport: request => request === './body.nova'
+        ? {
+            filename: '/demo/body.nova',
+            source: `
+              <template>
+                <TextBlock text="Included" />
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/body.nova'])
+    expect(result.code).toContain('text:"Included"')
+    expect(result.code).not.toContain('type:__NovaComponent')
+  })
+
+  it('inlines external template src files inside TimelineTaskProfile bodies', () => {
+    const result = compileTimelineTaskProfilesSource(`
+      <TimelineTaskProfile name="planned">
+        <template #default src="./planned.nova" />
+      </TimelineTaskProfile>
+    `, {
+      filename: '/demo/App.vue',
+      resolveImport: request => request === './planned.nova'
+        ? {
+            filename: '/demo/planned.nova',
+            source: `
+              <template>
+                <Rect :width="width" :height="height" background="#f8fafc" />
+                <TextBlock :text="task.title" :width="width - 12" :height="height" />
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/planned.nova'])
+    expect(result.code).toContain('planned:{')
+    expect(result.code).toContain("type:'rect'")
+    expect(result.code).toContain("type:'text'")
+    expect(result.code).toContain('text:task.title')
   })
 
   it('compiles Scenes and Scene DSL tags to core Nova scene schema types', () => {

@@ -70,6 +70,13 @@ interface TemplateSlotNode {
   children: Array<TemplateNode>
 }
 
+interface TemplateParseOptions {
+  filename?: string
+  resolveImport?: NovaCssCompileOptions['resolveImport']
+  dependencies?: Set<string>
+  includeStack?: Array<string>
+}
+
 interface ScriptSetupCompileResult {
   imports: Array<string>
   body: string
@@ -198,14 +205,23 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
 export interface TimelineTaskProfilesCompileResult {
   code: string
   diagnostics: Array<NovaUiStyleDiagnostic>
+  dependencies: Array<string>
 }
 
 /**
  * Компилирует декларативные TimelineTaskProfile nodes в plain TimelineTaskProfilesOptions fragment.
  */
-export function compileTimelineTaskProfilesSource(source: string): TimelineTaskProfilesCompileResult {
+export function compileTimelineTaskProfilesSource(
+  source: string,
+  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport'> = {},
+): TimelineTaskProfilesCompileResult {
   const diagnostics: Array<NovaUiStyleDiagnostic> = []
-  const nodes = parseTemplate(source, diagnostics)
+  const dependencies = new Set<string>()
+  const nodes = parseTemplate(source, diagnostics, 0, {
+    filename: options.filename,
+    resolveImport: options.resolveImport,
+    dependencies,
+  })
   validateTimelineTaskProfileNodes(nodes, diagnostics)
 
   const context: GenerateContext = {
@@ -219,6 +235,7 @@ export function compileTimelineTaskProfilesSource(source: string): TimelineTaskP
   return {
     code: generateTimelineTaskProfiles(nodes, context),
     diagnostics,
+    dependencies: [...dependencies],
   }
 }
 
@@ -258,8 +275,13 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
   diagnostics.push(...styles.diagnostics)
 
   const templateOffset = sfc.descriptor.template?.loc.start.offset ?? 0
+  const dependencies = new Set<string>()
   const templateNodes = sfc.descriptor.template
-    ? parseTemplate(sfc.descriptor.template.content, diagnostics, templateOffset)
+    ? parseTemplate(sfc.descriptor.template.content, diagnostics, templateOffset, {
+        filename,
+        resolveImport: options.resolveImport,
+        dependencies,
+      })
     : []
   validateTemplateNodes(templateNodes, diagnostics, {
     importedRuntimeSymbols: setup.importedRuntimeSymbols,
@@ -289,7 +311,7 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     }),
     diagnostics,
     scopeId,
-    dependencies: [...context.componentImports.keys()],
+    dependencies: [...new Set([...context.componentImports.keys(), ...dependencies])],
     metadata: {
       filename,
       nodes: createTemplateMetadata(templateNodes, setup),
@@ -468,15 +490,17 @@ function parseTemplate(
   source: string,
   diagnostics: Array<NovaUiStyleDiagnostic>,
   baseOffset = 0,
+  options: TemplateParseOptions = {},
 ): Array<TemplateNode> {
   const root = baseParse(source)
-  return root.children.flatMap(child => convertTemplateChild(child, diagnostics, baseOffset)).filter(Boolean)
+  return root.children.flatMap(child => convertTemplateChild(child, diagnostics, baseOffset, options)).filter(Boolean)
 }
 
 function convertTemplateChild(
   child: TemplateChildNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
   baseOffset: number,
+  options: TemplateParseOptions,
 ): Array<TemplateNode> {
   if (child.type === NodeTypes.TEXT) {
     if (child.content.trim()) {
@@ -491,7 +515,11 @@ function convertTemplateChild(
   if (child.type !== NodeTypes.ELEMENT) return []
 
   const element = child as ElementNode
-  if (element.tagType === ElementTypes.TEMPLATE) {
+  if (isTemplateElement(element)) {
+    if (hasTemplateInclude(element)) {
+      return resolveTemplateInclude(element, diagnostics, options)
+    }
+
     diagnostics.push({
       severity: 'error',
       code: 'orphan-slot-template',
@@ -507,12 +535,12 @@ function convertTemplateChild(
       attrRanges: collectElementAttrRanges(element, baseOffset),
       range: toSourceRange(element, baseOffset),
       tagRange: toTagSourceRange(element, baseOffset),
-      children: convertElementChildren(element, diagnostics, baseOffset).children,
+      children: convertElementChildren(element, diagnostics, baseOffset, options).children,
       slots: {},
     }]
   }
 
-  const nested = convertElementChildren(element, diagnostics, baseOffset)
+  const nested = convertElementChildren(element, diagnostics, baseOffset, options)
 
   return [{
     tag: element.tag,
@@ -529,13 +557,20 @@ function convertElementChildren(
   element: ElementNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
   baseOffset: number,
+  options: TemplateParseOptions,
 ): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
   const children: Array<TemplateNode> = []
   const slots: Record<string, TemplateSlotNode> = {}
 
   for (const child of element.children) {
-    if (child.type === NodeTypes.ELEMENT && child.tagType === ElementTypes.TEMPLATE) {
-      const slot = convertSlotTemplate(child as ElementNode, diagnostics, baseOffset)
+    if (child.type === NodeTypes.ELEMENT && isTemplateElement(child as ElementNode)) {
+      const template = child as ElementNode
+      if (hasTemplateInclude(template) && !isSlotTemplate(template)) {
+        children.push(...resolveTemplateInclude(template, diagnostics, options))
+        continue
+      }
+
+      const slot = convertSlotTemplate(template, diagnostics, baseOffset, options)
       if (slot) {
         if (slots[slot.name]) {
           diagnostics.push({
@@ -550,7 +585,7 @@ function convertElementChildren(
       }
     }
 
-    children.push(...convertTemplateChild(child, diagnostics, baseOffset))
+    children.push(...convertTemplateChild(child, diagnostics, baseOffset, options))
   }
 
   return { children, slots }
@@ -560,6 +595,7 @@ function convertSlotTemplate(
   element: ElementNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
   baseOffset: number,
+  options: TemplateParseOptions,
 ): TemplateSlotNode | null {
   const slotDirective = element.props.find((prop): prop is DirectiveNode => (
     prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot'
@@ -590,13 +626,143 @@ function convertSlotTemplate(
   const scope = slotDirective.exp && slotDirective.exp.type === NodeTypes.SIMPLE_EXPRESSION
     ? slotDirective.exp.content.trim()
     : undefined
-  const nested = convertElementChildren(element, diagnostics, baseOffset)
+  const nested = hasTemplateInclude(element)
+    ? { children: resolveTemplateInclude(element, diagnostics, options), slots: {} }
+    : convertElementChildren(element, diagnostics, baseOffset, options)
 
   return {
     name,
     scope,
     children: nested.children,
   }
+}
+
+function hasTemplateInclude(element: ElementNode): boolean {
+  return element.props.some(prop => (
+    (prop.type === NodeTypes.ATTRIBUTE && prop.name === 'src')
+    || (prop.type === NodeTypes.DIRECTIVE && prop.name === 'bind' && prop.arg?.type === NodeTypes.SIMPLE_EXPRESSION && prop.arg.content === 'src')
+  ))
+}
+
+function isTemplateElement(element: ElementNode): boolean {
+  return element.tag === 'template' || element.tagType === ElementTypes.TEMPLATE
+}
+
+function isSlotTemplate(element: ElementNode): boolean {
+  return element.props.some(prop => prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot')
+}
+
+function resolveTemplateInclude(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: TemplateParseOptions,
+): Array<TemplateNode> {
+  if (readElementDynamicAttr(element, 'src')) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'dynamic-template-src',
+      message: '<template src> поддерживает только статический src. Динамический :src не поддерживается.',
+    })
+    return []
+  }
+
+  const request = readElementStaticAttr(element, 'src')
+  if (!request) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-required',
+      message: '<template src> требует путь к .nova файлу.',
+    })
+    return []
+  }
+
+  if (hasNonEmptyTemplateChildren(element)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-inline-children',
+      message: '<template src> не может одновременно содержать inline children.',
+    })
+  }
+
+  const resolver = options.resolveImport
+  if (!resolver) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-resolver-missing',
+      message: '<template src> требует resolveImport в настройках компилятора.',
+    })
+    return []
+  }
+
+  const resolved = resolver(request, options.filename)
+  if (!resolved) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-not-found',
+      message: `Не удалось найти template include "${request}".`,
+    })
+    return []
+  }
+
+  const source = typeof resolved === 'string' ? resolved : resolved.source
+  const filename = typeof resolved === 'string' ? request : resolved.filename ?? request
+  const includeKey = filename
+  if (options.includeStack?.includes(includeKey)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-cycle',
+      message: `Обнаружен циклический template include "${request}".`,
+    })
+    return []
+  }
+
+  options.dependencies?.add(filename)
+
+  const sfc = parseSfc(source, { filename })
+  for (const error of sfc.errors) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-parse-error',
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  if (!sfc.descriptor.template) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-missing-template',
+      message: `Template include "${request}" должен содержать <template>.`,
+    })
+    return []
+  }
+
+  return parseTemplate(sfc.descriptor.template.content, diagnostics, 0, {
+    ...options,
+    filename,
+    includeStack: [...(options.includeStack ?? []), includeKey],
+  })
+}
+
+function hasNonEmptyTemplateChildren(element: ElementNode): boolean {
+  return element.children.some(child => {
+    if (child.type !== NodeTypes.TEXT) return true
+    return !!child.content.trim()
+  })
+}
+
+function readElementStaticAttr(element: ElementNode, name: string): string | undefined {
+  const attr = element.props.find((prop): prop is AttributeNode => prop.type === NodeTypes.ATTRIBUTE && prop.name === name)
+  return typeof attr?.value?.content === 'string' ? attr.value.content : undefined
+}
+
+function readElementDynamicAttr(element: ElementNode, name: string): string | undefined {
+  const directive = element.props.find((prop): prop is DirectiveNode => (
+    prop.type === NodeTypes.DIRECTIVE
+    && prop.name === 'bind'
+    && prop.arg?.type === NodeTypes.SIMPLE_EXPRESSION
+    && prop.arg.content === name
+  ))
+  return directive?.exp?.type === NodeTypes.SIMPLE_EXPRESSION ? directive.exp.content : undefined
 }
 
 function collectElementAttrs(
@@ -994,7 +1160,15 @@ function validateTimelineTaskProfileNodes(
       })
     }
 
-    validateTimelineTaskProfileChildren(node.children, diagnostics)
+    if (Object.keys(node.slots).some(name => name !== 'default')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-profile-slot',
+        message: 'TimelineTaskProfile поддерживает только default slot для внешнего template body.',
+      })
+    }
+
+    validateTimelineTaskProfileChildren(resolveTimelineTaskProfileChildren(node), diagnostics)
   }
 }
 
@@ -1037,12 +1211,16 @@ function generateTimelineTaskProfiles(nodes: Array<TemplateNode>, context: Gener
           const y = runtimeTask.y;
           const selected = runtimeTask.isSelected;
           const ctx = runtimeTask;
-          return ${generateTimelineProfileNodeSequence(node.children, context)};
+          return ${generateTimelineProfileNodeSequence(resolveTimelineTaskProfileChildren(node), context)};
         }${contract}
       }`
     })
 
   return `{defaultProfileId:'default',profiles:{${entries.join(',')}}}`
+}
+
+function resolveTimelineTaskProfileChildren(node: TemplateNode): Array<TemplateNode> {
+  return node.children.length > 0 ? node.children : node.slots.default?.children ?? []
 }
 
 function generateTimelineProfileNodeSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
