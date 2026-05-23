@@ -435,6 +435,46 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain("type:'text'")
   })
 
+  it('extracts TimelineChart public Vue runtime children into compiled root children', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <script setup lang="ts">
+        const data = []
+        const options = {}
+        </script>
+
+        <template>
+          <TimelineChart :data="data" :options="options">
+            <Flex direction="column" :width="900" :height="360">
+              <TimelineChart.TimeScale render-mode="overlay" :layout="{ height: 56 }">
+                <template #overlay="{ majorTicks }">
+                  <TextBlock for="tick in majorTicks" :key="tick.value" :text="tick.label" />
+                </template>
+              </TimelineChart.TimeScale>
+              <TimelineChart.Grid render-mode="replace" :layout="{ flexGrow: 1 }" />
+            </Flex>
+          </TimelineChart>
+        </template>
+      `,
+      sourcePath('src/pages/TimelinePublicChildren.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+    expect(code).toContain(':compiled-root-children="[{ type: __TimelineRootChildren0 }]"')
+    expect(code).not.toContain('<TimelineChart.TimeScale')
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('type:"TimelineChart.TimeScale"')
+    expect(compiled).toContain('renderMode:"overlay"')
+    expect(compiled).toContain('slots:{overlay:')
+    expect(compiled).toContain('type:"TimelineChart.Grid"')
+  })
+
   it('passes TimelineTaskProfile children to TimelineChart.Root inside NovaCanvas DSL', async () => {
     const plugin = novaVitePlugin()
 

@@ -130,13 +130,20 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
         }
       }
 
-      if (cleanId.endsWith('.vue') && !isVueSubBlockRequest(id)) {
+      if (cleanId.endsWith('.vue') && !isVueSubBlockRequest(id) && !id.includes('?raw')) {
         clearVueInlineVirtualModules(virtualModules, cleanId)
         const novaStyles = extractVueNovaStyles(source)
         let transformed = novaStyles.source
         let hasTransform = false
 
-        const timelineProfiles = transformVueTimelineChartProfiles(transformed, cleanId, this, options.includeDiagnostics ?? true)
+        const timelineProfiles = transformVueTimelineChartProfiles(
+          transformed,
+          cleanId,
+          this,
+          virtualModules,
+          options.includeDiagnostics ?? true,
+          novaStyles.styles,
+        )
         if (timelineProfiles) {
           transformed = timelineProfiles
           hasTransform = true
@@ -263,11 +270,14 @@ function transformVueTimelineChartProfiles(
   source: string,
   id: string,
   context: { addWatchFile: (id: string) => void },
+  virtualModules: Map<string, VirtualNovaModule>,
   includeDiagnostics: boolean,
+  novaStyleBlocks: Array<string> = [],
 ): string | null {
   if (!hasVueTimelineChartProfileSource(source)) return null
 
   const declarations: Array<string> = []
+  const imports: Array<string> = []
   const replacements: Array<Replacement> = []
   let index = 0
 
@@ -283,29 +293,53 @@ function transformVueTimelineChartProfiles(
     if (!Array.isArray(node.children)) return
 
     const profileChildren = node.children.filter((child: any) => isTimelineTaskProfileVueNode(child))
-    if (profileChildren.length === 0) return
+    const rootChildren = node.children.filter((child: any) => (
+      !isTimelineTaskProfileVueNode(child)
+      && !isEmptyTextNode(child)
+    ))
+    if (profileChildren.length === 0 && rootChildren.length === 0) return
 
-    const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
-    const result = compileTimelineTaskProfilesSource(profilesSource, {
-      filename: id,
-      resolveImport: (request, from) => resolveSourceImport(request, from, context),
-    })
-    emitDiagnostics(id, result.diagnostics, includeDiagnostics)
-    throwOnErrors(result.diagnostics)
+    let profilesProp = ''
+    if (profileChildren.length > 0) {
+      const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
+      const result = compileTimelineTaskProfilesSource(profilesSource, {
+        filename: id,
+        resolveImport: (request, from) => resolveSourceImport(request, from, context),
+      })
+      emitDiagnostics(id, result.diagnostics, includeDiagnostics)
+      throwOnErrors(result.diagnostics)
 
-    const constName = `__timelineTaskProfiles${index}`
-    declarations.push(`const ${constName} = ${result.code};`)
+      const constName = `__timelineTaskProfiles${index}`
+      declarations.push(`const ${constName} = ${result.code};`)
+      profilesProp = ` :compiled-task-profiles="${constName}"`
+    }
+
+    let rootChildrenProp = ''
+    if (rootChildren.length > 0) {
+      const componentName = `__TimelineRootChildren${index}`
+      const rawSource = rootChildren.map((child: any) => child.loc.source).join('\n').trim()
+      const normalizedTemplate = normalizeInlineVueTemplateBindings(rawSource)
+      const inlineSource = createInlineNovaTemplateSource(normalizedTemplate.source, novaStyleBlocks)
+      const importSource = `virtual:nova-template:${stripViteQuery(id)}:timeline-root-${index}.nova`
+      virtualModules.set(importSource, {
+        filename: `${stripViteQuery(id)}__timeline_root_children_${index}.nova`,
+        source: inlineSource,
+        ownerFile: stripViteQuery(id),
+      })
+      const importModuleSource = withVirtualVersion(importSource, inlineSource)
+      virtualModules.get(importSource)!.versionedId = importModuleSource
+      imports.push(`import ${componentName} from ${JSON.stringify(importModuleSource)};`)
+      const props = normalizedTemplate.bindings.length > 0
+        ? `props:{${normalizedTemplate.bindings.map(binding => `${binding.propName}:${binding.expression}`).join(',')}}`
+        : ''
+      rootChildrenProp = ` :compiled-root-children="[{ type: ${componentName}${props ? `, ${props}` : ''} }]"`
+    }
 
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
-    const openingWithProfiles = openingSource.replace(/>$/, ` :compiled-task-profiles="${constName}">`)
-    const children = node.children
-      .filter((child: any) => !isTimelineTaskProfileVueNode(child))
-      .map((child: any) => child.loc.source)
-      .join('\n')
-      .trim()
-    const replacement = `${openingWithProfiles}${children ? `\n${children}\n` : '\n'}</${node.tag}>`
+    const openingWithProfiles = openingSource.replace(/>$/, `${profilesProp}${rootChildrenProp}>`)
+    const replacement = `${openingWithProfiles}\n</${node.tag}>`
 
     replacements.push({
       start: templateOffset + node.loc.start.offset,
@@ -316,7 +350,7 @@ function transformVueTimelineChartProfiles(
   })
 
   if (replacements.length === 0) return null
-  return injectVueScriptSetupImports(applyReplacements(source, replacements), declarations.join('\n'))
+  return injectVueScriptSetupImports(applyReplacements(source, replacements), [...imports, ...declarations].join('\n'))
 }
 
 function extractVueNovaStyles(source: string): VueNovaStyleTransform {
@@ -386,7 +420,7 @@ function hasVueNovaCanvasSource(source: string): boolean {
 }
 
 function hasVueTimelineChartProfileSource(source: string): boolean {
-  return source.includes('<TimelineChart') && source.includes('<TimelineTaskProfile')
+  return source.includes('<TimelineChart')
 }
 
 function isTimelineTaskProfileVueNode(node: any): boolean {
