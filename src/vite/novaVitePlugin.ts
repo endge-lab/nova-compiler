@@ -3,8 +3,8 @@ import path from 'node:path'
 import type { Plugin } from 'vite'
 import { baseParse, NodeTypes } from '@vue/compiler-dom'
 import { parse as parseVueSfc } from '@vue/compiler-sfc'
-import { compileNovaCss, generateNovaCssModule, serializeStyleAsset } from '@/css/nova-css-compiler'
-import { compileNovaSfc, compileTimelineTaskProfilesSource } from '@/sfc/nova-sfc-compiler'
+import { compileNovaCss, generateNovaCssModule, serializeStyleAsset } from '../css/nova-css-compiler'
+import { compileNovaSfc, compileTimelineTaskProfilesSource } from '../sfc/nova-sfc-compiler'
 
 export interface NovaGeneratedOutputOptions {
   enabled?: boolean

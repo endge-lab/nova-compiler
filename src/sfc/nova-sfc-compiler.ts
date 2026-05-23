@@ -11,7 +11,7 @@ import {
 } from '@vue/compiler-dom'
 import { parse as parseSfc, type SFCStyleBlock } from '@vue/compiler-sfc'
 import type { NovaUiStyleDiagnostic } from '@endge/nova-ui-kit'
-import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '@/css/nova-css-compiler'
+import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from '../css/nova-css-compiler'
 
 export interface NovaSfcCompileOptions extends NovaCssCompileOptions {
   filename?: string
@@ -1199,6 +1199,15 @@ function generateTimelineTaskProfiles(nodes: Array<TemplateNode>, context: Gener
         : readAttr(node, 'contract')
           ? `,contract:${serializeStaticAttr(readAttr(node, 'contract')!)}`
           : ''
+      const selectionHighlight = readAttr(node, ':selection-highlight')
+        ? `,selectionHighlight:${readAttr(node, ':selection-highlight')}`
+        : readAttr(node, ':selectionHighlight')
+          ? `,selectionHighlight:${readAttr(node, ':selectionHighlight')}`
+          : readAttr(node, 'selection-highlight')
+            ? `,selectionHighlight:${serializeStaticAttr(readAttr(node, 'selection-highlight')!)}`
+            : readAttr(node, 'selectionHighlight')
+              ? `,selectionHighlight:${serializeStaticAttr(readAttr(node, 'selectionHighlight')!)}`
+              : ''
 
       return `${quoteKey(name)}:{
         schema:(__timelineTask) => {
@@ -1212,7 +1221,7 @@ function generateTimelineTaskProfiles(nodes: Array<TemplateNode>, context: Gener
           const selected = runtimeTask.isSelected;
           const ctx = runtimeTask;
           return ${generateTimelineProfileNodeSequence(resolveTimelineTaskProfileChildren(node), context)};
-        }${contract}
+        }${contract}${selectionHighlight}
       }`
     })
 
@@ -1252,6 +1261,7 @@ function generateTimelineProfileSchema(node: TemplateNode, context: GenerateCont
 function generateTimelineRectSchema(node: TemplateNode): string {
   const styleEntries = [
     profileStyleEntry(node, 'background'),
+    profileStyleEntry(node, 'radius'),
     profileStyleEntry(node, 'border'),
     profileStyleEntry(node, 'opacity'),
   ].filter(Boolean)

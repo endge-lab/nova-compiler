@@ -177,6 +177,18 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('text:task.title')
   })
 
+  it('compiles TimelineTaskProfile Rect radius as an independent style', () => {
+    const result = compileTimelineTaskProfilesSource(`
+      <TimelineTaskProfile name="planned" :selection-highlight="{ radius: 10 }">
+        <Rect :width="width" :height="height" background="#f8fafc" :radius="8" />
+      </TimelineTaskProfile>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('radius:8')
+    expect(result.code).toContain('selectionHighlight:{ radius: 10 }')
+  })
+
   it('compiles Scenes and Scene DSL tags to core Nova scene schema types', () => {
     const result = compileNovaSfc(`
       <template>
