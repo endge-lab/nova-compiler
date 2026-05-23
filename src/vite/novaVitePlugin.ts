@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { Plugin } from 'vite'
 import { baseParse, NodeTypes } from '@vue/compiler-dom'
 import { parse as parseVueSfc } from '@vue/compiler-sfc'
-import { compileNovaCss, generateNovaCssModule } from '@/css/nova-css-compiler'
+import { compileNovaCss, generateNovaCssModule, serializeStyleAsset } from '@/css/nova-css-compiler'
 import { compileNovaSfc, compileTimelineTaskProfilesSource } from '@/sfc/nova-sfc-compiler'
 
 export interface NovaGeneratedOutputOptions {
@@ -31,6 +31,8 @@ interface ParsedAttr {
 interface VueNovaStyleTransform {
   source: string
   styles: Array<string>
+  scopedStyles: Array<string>
+  globalStyles: Array<string>
 }
 
 interface Replacement {
@@ -113,7 +115,9 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           filename: cleanId,
           resolveImport: (request, from) => resolveSourceImport(request, from, this),
         })
-        const code = generateNovaCssModule(result)
+        const code = generateNovaCssModule(result, {
+          sideEffect: !hasViteQuery(id, 'asset'),
+        })
         emitDiagnostics(cleanId, result.diagnostics, options.includeDiagnostics ?? true)
         throwOnErrors(result.diagnostics)
         writeGeneratedOutput(generatedOutput, cleanId, code)
@@ -142,16 +146,27 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           this,
           virtualModules,
           options.includeDiagnostics ?? true,
-          novaStyles.styles,
+          novaStyles.scopedStyles,
         )
         if (timelineProfiles) {
           transformed = timelineProfiles
           hasTransform = true
         }
 
-        const novaCanvas = transformVueNovaCanvasTemplates(transformed, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.styles)
+        const novaCanvas = transformVueNovaCanvasTemplates(transformed, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.scopedStyles)
         if (novaCanvas) {
           transformed = novaCanvas
+          hasTransform = true
+        }
+
+        if (novaStyles.globalStyles.length > 0) {
+          transformed = injectVueGlobalNovaStyles(
+            transformed,
+            cleanId,
+            this,
+            options.includeDiagnostics ?? true,
+            novaStyles.globalStyles,
+          )
           hasTransform = true
         }
 
@@ -280,6 +295,7 @@ function transformVueTimelineChartProfiles(
   const imports: Array<string> = []
   const replacements: Array<Replacement> = []
   let index = 0
+  let timelineStyleAssetName = ''
 
   const sfc = parseVueSfc(source, { filename: id })
   const template = sfc.descriptor.template
@@ -290,14 +306,15 @@ function transformVueTimelineChartProfiles(
 
   walkVueTemplateElements(ast, node => {
     if (node.tag !== 'TimelineChart') return
-    if (!Array.isArray(node.children)) return
+    const children = Array.isArray(node.children) ? node.children : []
 
-    const profileChildren = node.children.filter((child: any) => isTimelineTaskProfileVueNode(child))
-    const rootChildren = node.children.filter((child: any) => (
+    const profileChildren = children.filter((child: any) => isTimelineTaskProfileVueNode(child))
+    const rootChildren = children.filter((child: any) => (
       !isTimelineTaskProfileVueNode(child)
       && !isEmptyTextNode(child)
     ))
-    if (profileChildren.length === 0 && rootChildren.length === 0) return
+    const shouldInjectStyleSheet = novaStyleBlocks.length > 0 && !hasVueStyleSheetProp(node)
+    if (profileChildren.length === 0 && rootChildren.length === 0 && !shouldInjectStyleSheet) return
 
     let profilesProp = ''
     if (profileChildren.length > 0) {
@@ -335,10 +352,27 @@ function transformVueTimelineChartProfiles(
       rootChildrenProp = ` :compiled-root-children="[{ type: ${componentName}${props ? `, ${props}` : ''} }]"`
     }
 
+    let styleSheetProp = ''
+    if (shouldInjectStyleSheet) {
+      if (!timelineStyleAssetName) {
+        timelineStyleAssetName = '__timelineChartNovaStyleSheet'
+        declarations.push(`const ${timelineStyleAssetName} = ${compileVueNovaStyleBlocksAssetCode(
+          novaStyleBlocks,
+          id,
+          context,
+          includeDiagnostics,
+        )};`)
+      }
+      styleSheetProp = ` :style-sheet="${timelineStyleAssetName}"`
+    }
+
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
-    const openingWithProfiles = openingSource.replace(/>$/, `${profilesProp}${rootChildrenProp}>`)
+    const injectedProps = `${profilesProp}${rootChildrenProp}${styleSheetProp}`
+    const openingWithProfiles = openingSource.trimEnd().endsWith('/>')
+      ? openingSource.replace(/\/>$/, `${injectedProps}>`)
+      : openingSource.replace(/>$/, `${injectedProps}>`)
     const replacement = `${openingWithProfiles}\n</${node.tag}>`
 
     replacements.push({
@@ -353,20 +387,78 @@ function transformVueTimelineChartProfiles(
   return injectVueScriptSetupImports(applyReplacements(source, replacements), [...imports, ...declarations].join('\n'))
 }
 
+function compileVueNovaStyleBlocksAssetCode(
+  blocks: Array<string>,
+  id: string,
+  context: { addWatchFile: (id: string) => void },
+  includeDiagnostics: boolean,
+): string {
+  const source = blocks.map(block => readVueNovaStyleBlockSource(block, id, context)).join('\n')
+  const result = compileNovaCss(source, {
+    filename: id,
+    resolveImport: (request, from) => resolveSourceImport(request, from, context),
+  })
+  emitDiagnostics(id, result.diagnostics, includeDiagnostics)
+  throwOnErrors(result.diagnostics)
+  return serializeStyleAsset(result)
+}
+
+function injectVueGlobalNovaStyles(
+  source: string,
+  id: string,
+  context: { addWatchFile: (id: string) => void },
+  includeDiagnostics: boolean,
+  novaStyleBlocks: Array<string>,
+): string {
+  const assetName = `__novaGlobalStyleSheet${hashString(`${id}:${novaStyleBlocks.join('\n')}`)}`
+  const assetCode = compileVueNovaStyleBlocksAssetCode(novaStyleBlocks, id, context, includeDiagnostics)
+  return injectVueScriptSetupImports(source, [
+    `import { Nova as __NovaRuntime } from '@endge/nova';`,
+    `const ${assetName} = ${assetCode};`,
+    `__NovaRuntime.import(${assetName});`,
+  ].join('\n'))
+}
+
+function readVueNovaStyleBlockSource(
+  block: string,
+  id: string,
+  context: { addWatchFile: (id: string) => void },
+): string {
+  const match = block.match(/^<style\b([^>]*)>([\s\S]*?)<\/style>$/i)
+  if (!match) return block
+
+  const attrs = parseAttrs(match[1] ?? '')
+  const src = readParsedAttr(attrs, 'src')
+  if (!src) return match[2] ?? ''
+
+  const imported = resolveSourceImport(src, id, context)
+  if (!imported) return ''
+  return typeof imported === 'string' ? imported : imported.source
+}
+
 function extractVueNovaStyles(source: string): VueNovaStyleTransform {
   const styles: Array<string> = []
+  const scopedStyles: Array<string> = []
+  const globalStyles: Array<string> = []
   const transformed = source.replace(/<style\b([^>]*)>([\s\S]*?)<\/style>/gi, (raw: string, attrsSource: string) => {
     const attrs = parseAttrs(attrsSource)
     const lang = readParsedAttr(attrs, 'lang')?.toLowerCase()
     if (!lang || !NOVA_STYLE_LANGS.has(lang)) return raw
 
     styles.push(raw)
+    if (attrs.some(attr => attr.name === 'scoped')) {
+      scopedStyles.push(raw)
+    } else {
+      globalStyles.push(raw)
+    }
     return ''
   })
 
   return {
     source: transformed,
     styles,
+    scopedStyles,
+    globalStyles,
   }
 }
 
@@ -421,6 +513,16 @@ function hasVueNovaCanvasSource(source: string): boolean {
 
 function hasVueTimelineChartProfileSource(source: string): boolean {
   return source.includes('<TimelineChart')
+}
+
+function hasVueStyleSheetProp(node: any): boolean {
+  for (const prop of node.props ?? []) {
+    if (prop.type === NodeTypes.ATTRIBUTE && (prop.name === 'style-sheet' || prop.name === 'styleSheet')) return true
+    if (prop.type !== NodeTypes.DIRECTIVE || prop.name !== 'bind') continue
+    const arg = prop.arg?.content
+    if (arg === 'style-sheet' || arg === 'styleSheet') return true
+  }
+  return false
 }
 
 function isTimelineTaskProfileVueNode(node: any): boolean {
@@ -689,6 +791,12 @@ function resolveGeneratedOutputPath(outputDir: string, sourceId: string): string
 
 function stripViteQuery(id: string): string {
   return id.split('?')[0]
+}
+
+function hasViteQuery(id: string, name: string): boolean {
+  const query = id.split('?')[1]
+  if (!query) return false
+  return new URLSearchParams(query).has(name)
 }
 
 function isVueSubBlockRequest(id: string): boolean {

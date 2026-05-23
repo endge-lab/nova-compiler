@@ -1,7 +1,7 @@
 {
   "name": "@endge/nova-compiler",
   "private": false,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "module": "./dist/nova-compiler.js",
   "types": "./dist/index.d.ts",
@@ -9,10 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/nova-compiler.js"
+    },
+    "./client": {
+      "types": "./client.d.ts"
     }
   },
   "sideEffects": false,
   "files": [
+    "client.d.ts",
     "dist"
   ],
   "scripts": {
@@ -24,8 +28,8 @@
   },
   "dependencies": {
     "@babel/parser": "^7.29.3",
-    "@endge/nova": "^0.5.1",
-    "@endge/nova-ui-kit": "^0.6.0",
+    "@endge/nova": "^0.7.0",
+    "@endge/nova-ui-kit": "^0.6.1",
     "@vue/compiler-dom": "^3.5.34",
     "@vue/compiler-sfc": "^3.5.34"
   },

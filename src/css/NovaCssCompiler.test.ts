@@ -83,4 +83,42 @@ describe('Nova CSS compiler', () => {
     expect(result.styleSheet?.rules[1]?.media?.features).toEqual([{ name: 'min-width', value: 900 }])
     expect(result.styleSheet?.rules[1]?.declarations.layout?.display).toBe('none')
   })
+
+  it('extracts @theme tokens and selector-scoped custom properties', () => {
+    const result = compileNovaCss(`
+      @theme light {
+        --nova-scene-bg: #ffffff;
+
+        TimelineChart {
+          --nova-timeline-timescale-bg: #f8fafc;
+        }
+
+        TimelineChart#airport.dense {
+          --nova-timeline-timescale-major-text: #2563eb;
+        }
+      }
+
+      Root.demo {
+        background: var(--nova-scene-bg, #ffffff);
+      }
+    `)
+
+    expect(result.ok).toBe(true)
+    expect(result.themes).toHaveLength(1)
+    expect(result.themes?.[0]?.tokens['--nova-scene-bg']).toBe('#ffffff')
+    expect(result.themes?.[0]?.styleSheet?.rules).toHaveLength(2)
+    expect(result.themes?.[0]?.styleSheet?.rules[0]?.selector.parts[0]?.type).toBe('TimelineChart')
+    expect(result.themes?.[0]?.styleSheet?.rules[1]?.selector.parts[0]).toMatchObject({
+      id: 'airport',
+      classes: ['dense'],
+    })
+    expect(result.styleSheet?.rules).toHaveLength(1)
+  })
+
+  it('returns diagnostics for malformed @theme blocks', () => {
+    const result = compileNovaCss('@theme 123 { --nova-scene-bg: #ffffff; }')
+
+    expect(result.ok).toBe(false)
+    expect(result.diagnostics.some(item => item.code === 'invalid-theme-id')).toBe(true)
+  })
 })

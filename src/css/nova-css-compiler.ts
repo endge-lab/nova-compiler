@@ -3,6 +3,7 @@ import {
   validateNovaUiStyleSheetSource,
   type NovaUiStyleDiagnostic,
   type NovaUiStyleSheetAsset,
+  type NovaUiStyleThemeDefinition,
 } from '@endge/nova-ui-kit'
 
 export interface NovaCssCompileOptions {
@@ -19,21 +20,30 @@ export interface NovaCssCompileResult extends NovaUiStyleSheetAsset {
   flattenedSource: string
 }
 
+export interface NovaCssGenerateModuleOptions {
+  sideEffect?: boolean
+}
+
 /** Компилирует `.novacss` в precompiled Nova stylesheet asset. */
 export function compileNovaCss(source: string, options: NovaCssCompileOptions = {}): NovaCssCompileResult {
   const imports: Array<string> = []
   const diagnostics: Array<NovaUiStyleDiagnostic> = []
   const flattenedSource = resolveImports(source, options, imports, diagnostics)
-  const scopedSource = options.scopeId ? scopeNovaCss(flattenedSource, options.scopeId) : flattenedSource
+  const themeExtraction = extractNovaCssThemes(flattenedSource, diagnostics)
+  const scopedSource = options.scopeId ? scopeNovaCss(themeExtraction.source, options.scopeId) : themeExtraction.source
   const validation = validateNovaUiStyleSheetSource(scopedSource)
-  const tokenDependencies = validation.styleSheet?.tokenDependencies
-    ?? extractNovaUiStyleTokenDependencies(scopedSource)
+  const themes = compileNovaCssThemes(themeExtraction.themes, {
+    scopeId: options.scopeId,
+    diagnostics,
+  })
+  const tokenDependencies = extractNovaUiStyleTokenDependencies(`${scopedSource}\n${themes.map(theme => theme.styleSheet?.source ?? '').join('\n')}`)
 
   return {
     ok: validation.ok && !diagnostics.some(item => item.severity === 'error'),
     source: scopedSource,
     flattenedSource,
     styleSheet: validation.styleSheet,
+    themes,
     diagnostics: [...diagnostics, ...validation.diagnostics],
     tokenDependencies,
     scopeId: options.scopeId,
@@ -42,11 +52,19 @@ export function compileNovaCss(source: string, options: NovaCssCompileOptions = 
 }
 
 /** Создает JS module для Vite import `.novacss`. */
-export function generateNovaCssModule(result: NovaCssCompileResult): string {
-  return `const asset = ${serializeStyleAsset(result)};
-export const source = asset.source;
+export function generateNovaCssModule(result: NovaCssCompileResult, options: NovaCssGenerateModuleOptions = {}): string {
+  const registration = options.sideEffect
+    ? `import { Nova } from '@endge/nova';\n`
+    : ''
+  const sideEffect = options.sideEffect
+    ? 'Nova.import(asset);\n'
+    : ''
+
+  return `${registration}const asset = ${serializeStyleAsset(result)};
+${sideEffect}export const source = asset.source;
 export const diagnostics = asset.diagnostics;
 export const tokenDependencies = asset.tokenDependencies;
+export const themes = asset.themes ?? [];
 export default asset;
 `
 }
@@ -88,6 +106,163 @@ function resolveImports(
 
 function scopeNovaCss(source: string, scopeId: string): string {
   return scopeNovaCssBlock(source, scopeId)
+}
+
+interface ExtractedNovaCssTheme {
+  id: string
+  body: string
+}
+
+interface NovaCssThemeExtraction {
+  source: string
+  themes: Array<ExtractedNovaCssTheme>
+}
+
+function extractNovaCssThemes(
+  source: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): NovaCssThemeExtraction {
+  const themes: Array<ExtractedNovaCssTheme> = []
+  let output = ''
+  let cursor = 0
+
+  while (cursor < source.length) {
+    const themeIndex = findThemeAtRule(source, cursor)
+    if (themeIndex < 0) {
+      output += source.slice(cursor)
+      break
+    }
+
+    output += source.slice(cursor, themeIndex)
+    const preludeStart = themeIndex + '@theme'.length
+    const blockStart = findNextBrace(source, preludeStart)
+    if (blockStart < 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'invalid-theme-rule',
+        message: 'Невалидный @theme: ожидается блок `{ ... }`.',
+      })
+      cursor = source.length
+      break
+    }
+
+    const id = source.slice(preludeStart, blockStart).trim()
+    if (!/^[A-Za-z_][\w-]*$/.test(id)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'invalid-theme-id',
+        message: `Невалидный идентификатор @theme "${id}".`,
+      })
+    }
+
+    const blockEnd = findMatchingBrace(source, blockStart)
+    if (blockEnd < 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'unclosed-theme-rule',
+        message: `Незакрытый @theme "${id || '<empty>'}".`,
+      })
+      cursor = source.length
+      break
+    }
+
+    if (id) {
+      themes.push({
+        id,
+        body: source.slice(blockStart + 1, blockEnd),
+      })
+    }
+    cursor = blockEnd + 1
+  }
+
+  return {
+    source: output,
+    themes,
+  }
+}
+
+function compileNovaCssThemes(
+  themes: Array<ExtractedNovaCssTheme>,
+  options: {
+    scopeId?: string
+    diagnostics: Array<NovaUiStyleDiagnostic>
+  },
+): Array<NovaUiStyleThemeDefinition> {
+  return themes.map(theme => {
+    const body = splitThemeBody(theme.body)
+    const selectorSource = options.scopeId ? scopeNovaCss(body.rules, options.scopeId) : body.rules
+    const validation = validateNovaUiStyleSheetSource(selectorSource)
+    options.diagnostics.push(...validation.diagnostics)
+
+    return {
+      id: theme.id,
+      tokens: body.tokens,
+      styleSheet: validation.styleSheet,
+    }
+  })
+}
+
+function splitThemeBody(source: string): {
+  tokens: Record<`--${string}`, string>
+  rules: string
+} {
+  const tokens: Record<`--${string}`, string> = {}
+  let rules = ''
+  let declarations = ''
+  let cursor = 0
+
+  while (cursor < source.length) {
+    const next = findNextTopLevel(source, cursor, ['{', ';'])
+    if (next < 0) {
+      declarations += source.slice(cursor)
+      break
+    }
+
+    if (source[next] === ';') {
+      declarations += source.slice(cursor, next + 1)
+      cursor = next + 1
+      continue
+    }
+
+    const end = findMatchingBrace(source, next)
+    if (end < 0) {
+      rules += source.slice(cursor)
+      break
+    }
+
+    rules += source.slice(cursor, end + 1)
+    cursor = end + 1
+  }
+
+  for (const match of declarations.matchAll(/(--[\w-]+)\s*:\s*([^;]+)\s*;/g)) {
+    tokens[match[1] as `--${string}`] = stripQuotes(match[2].trim())
+  }
+
+  return {
+    tokens,
+    rules,
+  }
+}
+
+function findThemeAtRule(source: string, cursor: number): number {
+  let quote = ''
+
+  for (let index = cursor; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === '\'') {
+      quote = char
+      continue
+    }
+    if (source.startsWith('@theme', index) && !/[\w-]/.test(source[index + '@theme'.length] ?? '')) {
+      return index
+    }
+  }
+
+  return -1
 }
 
 function scopeNovaCssBlock(source: string, scopeId: string): string {
@@ -157,6 +332,28 @@ function findNextBrace(source: string, cursor: number): number {
   return -1
 }
 
+function findNextTopLevel(source: string, cursor: number, chars: Array<string>): number {
+  let depth = 0
+  let quote = ''
+
+  for (let index = cursor; index < source.length; index += 1) {
+    const char = source[index]
+    if (quote) {
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === '\'') {
+      quote = char
+      continue
+    }
+    if (char === '(' || char === '[') depth += 1
+    if (char === ')' || char === ']') depth -= 1
+    if (depth === 0 && chars.includes(char)) return index
+  }
+
+  return -1
+}
+
 function findMatchingBrace(source: string, openIndex: number): number {
   let depth = 0
   let quote = ''
@@ -179,6 +376,17 @@ function findMatchingBrace(source: string, openIndex: number): number {
   }
 
   return -1
+}
+
+function stripQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith('\'') && value.endsWith('\''))
+  ) {
+    return value.slice(1, -1)
+  }
+
+  return value
 }
 
 function serializeValue(value: unknown): string {

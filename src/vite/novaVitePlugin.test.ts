@@ -49,6 +49,35 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(fs.readFileSync(cssOutput, 'utf8')).toContain('const asset =')
   })
 
+  it('generates global registration for bare .novacss imports', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '@theme light { --nova-scene-bg: #ffffff; }',
+      sourcePath('src/fixtures/theme.novacss'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('import { Nova } from \'@endge/nova\'')
+    expect(code).toContain('Nova.import(asset)')
+    expect(code).toContain('export const themes = asset.themes ?? []')
+  })
+
+  it('returns a plain asset for .novacss?asset imports', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '@theme light { --nova-scene-bg: #ffffff; }',
+      `${sourcePath('src/fixtures/theme.novacss')}?asset`,
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).not.toContain('Nova.import(asset)')
+    expect(code).toContain('export default asset')
+  })
+
   it('transforms NovaCanvas default slot DSL into a virtual module import', async () => {
     const outputDir = createTempDir()
     const plugin = novaVitePlugin({
@@ -178,6 +207,37 @@ describe('Nova Vite plugin generated debug output', () => {
     const compiled = await runLoad(plugin, virtualId!)
     expect(compiled).toContain('styleSheet:props.styleSheet ?? styleSheet')
     expect(compiled).toContain('#111111')
+  })
+
+  it('registers unscoped Vue novacss style blocks globally', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      `
+        <script setup lang="ts">
+        const enabled = true
+        </script>
+
+        <template>
+          <section v-if="enabled" />
+        </template>
+
+        <style lang="novacss">
+        @theme light {
+          TimelineChart {
+            --nova-timeline-timescale-bg: #ffffff;
+          }
+        }
+        </style>
+      `,
+      sourcePath('src/pages/Page.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).not.toContain('lang="novacss"')
+    expect(code).toContain('import { Nova as __NovaRuntime } from \'@endge/nova\'')
+    expect(code).toContain('__NovaRuntime.import(__novaGlobalStyleSheet')
   })
 
   it('does not treat lang novascc as NovaCSS', async () => {
