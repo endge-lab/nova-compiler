@@ -273,6 +273,8 @@ describe('Nova SFC compiler', () => {
                 :height="group.height"
                 :background="group.hasChildren ? '#f8fbff' : '#fff'"
               />
+            </template>
+            <template #overlay="{ x, y, height, columnRects, api }">
               <Line
                 for="columnRect in columnRects"
                 :x1="columnRect.x + columnRect.width - 1"
@@ -289,9 +291,64 @@ describe('Nova SFC compiler', () => {
 
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('compiledGroupPanelTemplate:')
+    expect(result.code).toContain('compiledGroupPanelOverlayTemplate:')
     expect(result.code).toContain('const columnRects = ctx.columnRects')
     expect(result.code).toContain('__novaFor(visibleGroups)')
     expect(result.code).toContain('__novaFor(columnRects)')
+  })
+
+  it('compiles TimelineChart.Markers DSL to compiled marker options', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const markers = []
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.Markers :items="markers">
+            <TimelineChart.Marker
+              id="today"
+              kind="today"
+              label="Сегодня"
+              color="#1d73ff"
+              :line="{ from: 'tasks.top', to: 'tasks.bottom' }"
+              :label-placement="{ anchor: 'timescale.bottom', align: 'center', offsetY: 6 }"
+            />
+          </TimelineChart.Markers>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledMarkers:')
+    expect(result.code).toContain('value:markers')
+    expect(result.code).toContain('defaultValue:[{id:"today",kind:"today"')
+    expect(result.code).toContain('line:{ from: \'tasks.top\', to: \'tasks.bottom\' }')
+    expect(result.code).toContain('label:{ anchor: \'timescale.bottom\', align: \'center\', offsetY: 6 }')
+  })
+
+  it('compiles TimelineChart.Marker slot to renderMarker context', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.Markers>
+            <TimelineChart.Marker id="today" kind="today">
+              <template #default="{ rects, timeToPx, state, defaultRender }">
+                <Rect :x="timeToPx(state.now) - 1" :y="rects.tasks.y" :width="2" :height="rects.tasks.height" background="#1d73ff" />
+                <TextBlock text="Сегодня" :x="timeToPx(state.now) + 4" :y="rects.tasks.y" :width="56" :height="18" />
+              </template>
+            </TimelineChart.Marker>
+          </TimelineChart.Markers>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('renderMarker:(__timelineMarker)')
+    expect(result.code).toContain('const rects = ctx.rects')
+    expect(result.code).toContain('const timeToPx = ctx.timeToPx')
+    expect(result.code).toContain('const defaultRender = ctx.defaultRender')
+    expect(result.code).toContain('x:timeToPx(state.now) - 1')
   })
 
   it('inlines external template src files inside TimelineChart.GroupPanel without component nodes', () => {

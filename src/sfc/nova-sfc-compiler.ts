@@ -249,6 +249,7 @@ const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', '
 const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
 const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Icon', 'Text', 'TextBlock'])
 const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupPanel', 'TimelineChart.GroupColumn'])
+const TIMELINE_MARKER_DSL_TAGS = new Set(['TimelineChart.Markers', 'TimelineChart.Marker'])
 const TIMELINE_GROUP_SCHEMA_TAGS = new Set(['Rect', 'Line', 'Circle', 'Icon', 'Text', 'TextBlock', 'ProgressRing'])
 const CORE_DSL_TAGS: Record<string, string> = {
   Scenes: 'nova.scenes',
@@ -1170,6 +1171,7 @@ function validateTemplateNodeList(
       && !TIMELINE_PROFILE_MARKER_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
       && !TIMELINE_GROUP_MARKER_TAGS.has(node.tag)
+      && !TIMELINE_MARKER_DSL_TAGS.has(node.tag)
       && !PATTERN_DECLARATION_TAGS.has(node.tag)
       && !node.tag.includes('.')
       && !isComponentInclude
@@ -1232,6 +1234,18 @@ function validateTemplateNodeList(
 
     if (node.tag === 'TimelineChart.GroupColumn') {
       validateTimelineGroupColumnNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
+    if (node.tag === 'TimelineChart.Markers') {
+      validateTimelineMarkerNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
+    if (node.tag === 'TimelineChart.Marker') {
+      validateTimelineMarkerNodes([node], diagnostics)
       previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
       continue
     }
@@ -1314,7 +1328,7 @@ function generateSchema(
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile' && !isTimelineGroupTemplateNode(child))
+    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile' && !isTimelineGroupTemplateNode(child) && !isTimelineMarkerTemplateNode(child))
     : node.children
   const timelineTaskProfiles = isTimelineRootTag(node)
     ? generateTimelineTaskProfilesProp(node.children, context)
@@ -1325,10 +1339,18 @@ function generateSchema(
   const timelineGroupPanelTemplate = isTimelineRootTag(node)
     ? generateTimelineGroupPanelTemplateProp(node.children, context)
     : ''
+  const timelineGroupPanelOverlayTemplate = isTimelineRootTag(node)
+    ? generateTimelineGroupPanelOverlayTemplateProp(node.children, context)
+    : ''
+  const timelineMarkers = isTimelineRootTag(node)
+    ? generateTimelineMarkersProp(node.children, context)
+    : ''
   const props = [
     timelineTaskProfiles,
     timelineGroupColumnTemplates,
     timelineGroupPanelTemplate,
+    timelineGroupPanelOverlayTemplate,
+    timelineMarkers,
   ].reduce(
     (base, extra) => mergePropsCode(base, extra),
     generateProps(node, context, isCompiledComponent, isTopLevelRoot),
@@ -1468,6 +1490,18 @@ function generateTimelineGroupPanelTemplateProp(nodes: Array<TemplateNode>, cont
   return `compiledGroupPanelTemplate:${generateTimelineGroupPanelTemplate(panel.slots.background.children, context)}`
 }
 
+function generateTimelineGroupPanelOverlayTemplateProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const panel = collectTimelineGroupPanelNodes(nodes).find(node => node.slots.overlay)
+  if (!panel?.slots.overlay) return ''
+  return `compiledGroupPanelOverlayTemplate:${generateTimelineGroupPanelTemplate(panel.slots.overlay.children, context)}`
+}
+
+function generateTimelineMarkersProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const markerRoots = collectTimelineMarkersNodes(nodes)
+  if (markerRoots.length === 0) return ''
+  return `compiledMarkers:${generateTimelineMarkersConfig(markerRoots, context)}`
+}
+
 function mergePropsCode(base: string, extra: string): string {
   if (!extra) return base
   if (!base) return `{${extra}}`
@@ -1476,6 +1510,10 @@ function mergePropsCode(base: string, extra: string): string {
 
 function isTimelineGroupTemplateNode(node: TemplateNode): boolean {
   return node.tag === 'TimelineChart.GroupPanel' || node.tag === 'TimelineChart.GroupColumn'
+}
+
+function isTimelineMarkerTemplateNode(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.Markers' || node.tag === 'TimelineChart.Marker'
 }
 
 function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
@@ -1508,6 +1546,64 @@ function collectTimelineGroupPanelNodes(nodes: Array<TemplateNode>): Array<Templ
   return result
 }
 
+function collectTimelineMarkersNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
+  const result: Array<TemplateNode> = []
+  for (const node of nodes) {
+    if (node.tag === 'TimelineChart.Markers') {
+      result.push(node)
+      continue
+    }
+    result.push(...collectTimelineMarkersNodes(node.children))
+    for (const slot of Object.values(node.slots)) {
+      result.push(...collectTimelineMarkersNodes(slot.children))
+    }
+  }
+  return result
+}
+
+function validateTimelineMarkerNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (node.tag === 'TimelineChart.Markers') {
+      for (const child of node.children) {
+        if (child.tag !== 'TimelineChart.Marker' && child.tag !== 'template') {
+          diagnostics.push({
+            severity: 'error',
+            code: 'timeline-markers-child',
+            message: 'TimelineChart.Markers поддерживает только вложенные TimelineChart.Marker и <template src>.',
+          })
+        }
+      }
+      validateTimelineMarkerNodes(node.children.filter(child => child.tag === 'TimelineChart.Marker'), diagnostics)
+      continue
+    }
+
+    if (node.tag !== 'TimelineChart.Marker') continue
+
+    if (!readTimelineMarkerAttr(node, 'kind')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-marker-kind',
+        message: '<TimelineChart.Marker> требует kind.',
+      })
+    }
+
+    for (const slotName of Object.keys(node.slots)) {
+      if (slotName !== 'default') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-marker-slot',
+          message: 'TimelineChart.Marker поддерживает только default slot для renderMarker.',
+        })
+      }
+    }
+
+    validateTimelineGroupColumnSchemaChildren(node.slots.default?.children ?? [], diagnostics)
+  }
+}
+
 function validateTimelineGroupPanelNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
@@ -1515,11 +1611,11 @@ function validateTimelineGroupPanelNodes(
   for (const node of nodes) {
     const slotNames = Object.keys(node.slots)
     for (const slotName of slotNames) {
-      if (slotName !== 'background') {
+      if (slotName !== 'background' && slotName !== 'overlay') {
         diagnostics.push({
           severity: 'error',
           code: 'timeline-group-panel-slot',
-          message: 'TimelineChart.GroupPanel поддерживает только #background и вложенные TimelineChart.GroupColumn.',
+          message: 'TimelineChart.GroupPanel поддерживает только #background, #overlay и вложенные TimelineChart.GroupColumn.',
         })
       }
     }
@@ -1529,12 +1625,13 @@ function validateTimelineGroupPanelNodes(
         diagnostics.push({
           severity: 'error',
           code: 'timeline-group-panel-child',
-          message: 'TimelineChart.GroupPanel поддерживает только #background, <template src> и TimelineChart.GroupColumn.',
+          message: 'TimelineChart.GroupPanel поддерживает только #background, #overlay, <template src> и TimelineChart.GroupColumn.',
         })
       }
     }
 
     validateTimelineGroupColumnSchemaChildren(node.slots.background?.children ?? [], diagnostics)
+    validateTimelineGroupColumnSchemaChildren(node.slots.overlay?.children ?? [], diagnostics)
     validateTimelineGroupColumnNodes(collectTimelineGroupColumnNodes(node.children), diagnostics)
   }
 }
@@ -1640,6 +1737,112 @@ function generateTimelineGroupPanelTemplate(nodes: Array<TemplateNode>, context:
     const chart = ctx.chart;
     return ${generateTimelineGroupColumnSchemaSequence(nodes, context)};
   }`
+}
+
+function generateTimelineMarkersConfig(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const entries: Array<string> = []
+  const markerEntries: Array<string> = []
+
+  for (const node of nodes) {
+    markerEntries.push(...node.children
+      .filter(child => child.tag === 'TimelineChart.Marker')
+      .map(child => generateTimelineMarkerConfig(child, context)))
+
+    const items = readTimelineMarkerAttr(node, 'items')
+    if (items) entries.push(`value:${items}`)
+
+    const controller = readTimelineMarkerAttr(node, 'controller')
+    if (controller) entries.push(`controller:${controller}`)
+
+    const defaults = readTimelineMarkerAttr(node, 'defaults')
+    if (defaults) entries.push(`placement:${generateTimelineMarkerPlacementFromDefaults(defaults)}`)
+  }
+
+  if (markerEntries.length > 0) entries.push(`defaultValue:[${markerEntries.join(',')}]`)
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineMarkerConfig(node: TemplateNode, context: GenerateContext): string {
+  const entries = [
+    timelineMarkerEntry(node, 'id'),
+    timelineMarkerEntry(node, 'kind'),
+    timelineMarkerEntry(node, 'time'),
+    timelineMarkerEntry(node, 'startTime') || timelineMarkerEntry(node, 'start-time', 'startTime'),
+    timelineMarkerEntry(node, 'endTime') || timelineMarkerEntry(node, 'end-time', 'endTime'),
+    timelineMarkerEntry(node, 'hours'),
+    timelineMarkerEntry(node, 'label'),
+    timelineMarkerEntry(node, 'color'),
+    timelineMarkerEntry(node, 'enabled'),
+    generateTimelineMarkerPlacementEntry(node),
+    generateTimelineMarkerRenderer(node, context),
+  ].filter(Boolean)
+
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineMarkerPlacementEntry(node: TemplateNode): string {
+  const placement = readTimelineMarkerAttr(node, 'placement')
+  const line = readTimelineMarkerAttr(node, 'line')
+  const label = readTimelineMarkerAttr(node, 'labelPlacement') ?? readTimelineMarkerAttr(node, 'label-placement')
+  const range = readTimelineMarkerAttr(node, 'range')
+
+  if (!placement && !line && !label && !range) return ''
+
+  const entries = [
+    placement ? `...(${placement})` : '',
+    line ? `line:${line}` : '',
+    label ? `label:${label}` : '',
+    range ? `range:${range}` : '',
+  ].filter(Boolean)
+
+  return `placement:{${entries.join(',')}}`
+}
+
+function generateTimelineMarkerPlacementFromDefaults(defaults: string): string {
+  return `(() => {
+    const __timelineMarkerDefaults = ${defaults};
+    return {
+      ...(__timelineMarkerDefaults.placement ?? {}),
+      ...(__timelineMarkerDefaults.line ? { line: __timelineMarkerDefaults.line } : {}),
+      ...(__timelineMarkerDefaults.label ? { label: __timelineMarkerDefaults.label } : {}),
+      ...(__timelineMarkerDefaults.labelPlacement ? { label: __timelineMarkerDefaults.labelPlacement } : {}),
+      ...(__timelineMarkerDefaults.range ? { range: __timelineMarkerDefaults.range } : {}),
+    };
+  })()`
+}
+
+function generateTimelineMarkerRenderer(node: TemplateNode, context: GenerateContext): string {
+  const slot = node.slots.default
+  if (!slot) return ''
+
+  return `renderMarker:(__timelineMarker) => {
+    const ctx = __timelineMarker;
+    const marker = ctx.marker;
+    const rects = ctx.rects;
+    const timeToPx = ctx.timeToPx;
+    const pxToTime = ctx.pxToTime;
+    const api = ctx.api;
+    const state = ctx.state;
+    const defaultRender = ctx.defaultRender;
+    return ${generateTimelineGroupColumnSchemaSequence(slot.children, context)};
+  }`
+}
+
+function timelineMarkerEntry(node: TemplateNode, name: string, targetName = normalizeDslPropName(name)): string {
+  const value = readTimelineMarkerAttr(node, name)
+  return value ? `${quoteKey(targetName)}:${value}` : ''
+}
+
+function readTimelineMarkerAttr(node: TemplateNode, name: string): string | undefined {
+  const normalizedName = normalizeDslPropName(name)
+  const dynamic = readAttr(node, `:${name}`) ?? readAttr(node, `:${normalizedName}`)
+  if (dynamic !== undefined) return dynamic
+  const staticValue = readAttr(node, name) ?? readAttr(node, normalizedName)
+  if (staticValue !== undefined) return serializeStaticAttr(staticValue)
+  if (Object.prototype.hasOwnProperty.call(node.attrs, name) || Object.prototype.hasOwnProperty.call(node.attrs, normalizedName)) {
+    return 'true'
+  }
+  return undefined
 }
 
 function generateTimelineGroupColumnSchemaSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
