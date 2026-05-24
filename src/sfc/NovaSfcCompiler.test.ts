@@ -34,6 +34,8 @@ describe('Nova SFC compiler', () => {
 
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('export default class NovaDemo extends NovaNode')
+    expect(result.code).toContain('import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime }')
+    expect(result.code).toContain('__NovaRuntime.trackNode(this, () => {')
     expect(result.code).toContain('registerNovaUIKit(app.schema)')
     expect(result.code).toContain('__ensureNovaUiKit(app)')
     expect(result.code).toContain('new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} })')

@@ -118,6 +118,71 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(fs.readFileSync(inlineOutput, 'utf8')).toContain('export default class PageVueNovaTemplate0 extends NovaNode')
   })
 
+  it('transforms static NovaCanvas mount into a compiled component marker', async () => {
+    const rootDir = createTempDir()
+    fs.mkdirSync(path.join(rootDir, 'src/ui'), { recursive: true })
+    fs.writeFileSync(path.join(rootDir, 'src/ui/NovaApp.nova'), '<template><Root /></template>')
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">const theme = "dark"</script><template><NovaCanvas mount="./ui/NovaApp.nova" :props="{ theme }" /></template>',
+      path.join(rootDir, 'src/App.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('import __NovaMount0 from "./ui/NovaApp.nova";')
+    expect(code).toContain('<NovaCanvas mount="./ui/NovaApp.nova" :props="{ theme }"')
+    expect(code).toContain(':component="__NovaMount0"')
+    expect(code).toContain('source="./ui/NovaApp.nova"')
+    expect(code).toContain('v-bind="{ theme }"')
+  })
+
+  it('rejects dynamic NovaCanvas mount paths', async () => {
+    const plugin = novaVitePlugin()
+
+    await expect(runTransform(
+      plugin,
+      '<template><NovaCanvas :mount="entry" /></template>',
+      sourcePath('src/pages/Page.vue'),
+    )).rejects.toThrow(/dynamic-nova-canvas-mount/)
+  })
+
+  it('rejects NovaCanvas mount mixed with inline DSL children', async () => {
+    const rootDir = createTempDir()
+    fs.mkdirSync(path.join(rootDir, 'src/ui'), { recursive: true })
+    fs.writeFileSync(path.join(rootDir, 'src/ui/NovaApp.nova'), '<template><Root /></template>')
+    const plugin = novaVitePlugin()
+
+    await expect(runTransform(
+      plugin,
+      '<template><NovaCanvas mount="./ui/NovaApp.nova"><Root /></NovaCanvas></template>',
+      path.join(rootDir, 'src/App.vue'),
+    )).rejects.toThrow(/nova-canvas-mount-inline-conflict/)
+  })
+
+  it('rejects NovaCanvas mount paths without .nova extension', async () => {
+    const plugin = novaVitePlugin()
+
+    await expect(runTransform(
+      plugin,
+      '<template><NovaCanvas mount="./ui/NovaApp.vue" /></template>',
+      sourcePath('src/pages/Page.vue'),
+    )).rejects.toThrow(/nova-canvas-mount-extension/)
+  })
+
+  it('rejects missing NovaCanvas mount files', async () => {
+    const rootDir = createTempDir()
+    fs.mkdirSync(path.join(rootDir, 'src'), { recursive: true })
+    const plugin = novaVitePlugin()
+
+    await expect(runTransform(
+      plugin,
+      '<template><NovaCanvas mount="./ui/Missing.nova" /></template>',
+      path.join(rootDir, 'src/App.vue'),
+    )).rejects.toThrow(/nova-canvas-mount-not-found/)
+  })
+
   it('versions inline NovaCanvas virtual imports when Vue source changes', async () => {
     const plugin = novaVitePlugin()
     const file = sourcePath('src/pages/Page.vue')

@@ -1961,7 +1961,7 @@ function generateModule(options: {
     : 'return {};'
   const globalStylesExpression = options.hasGlobalStyles ? '[__novaSfcGlobalStyle]' : '[]'
 
-  return `import { NovaNode, NovaTemplateRuntime } from '@endge/nova';
+  return `import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime } from '@endge/nova';
 import { NovaUIKit as __NovaUIKit, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
 ${options.setup.imports.join('\n')}
 ${options.generatedImports.join('\n')}
@@ -2063,7 +2063,9 @@ ${indent(options.setup.body, 4)}
   }
 
   update() {
-    this.templateRuntime.reconcile(this.createTemplate());
+    __NovaRuntime.trackNode(this, () => {
+      this.templateRuntime.reconcile(this.createTemplate());
+    });
   }
 
   render() {}

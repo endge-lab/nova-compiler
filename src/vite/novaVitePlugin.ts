@@ -157,7 +157,14 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           hasTransform = true
         }
 
-        const novaCanvas = transformVueNovaCanvasTemplates(transformed, cleanId, virtualModules, options.includeDiagnostics ?? true, novaStyles.scopedStyles)
+        const novaCanvas = transformVueNovaCanvasTemplates(
+          transformed,
+          cleanId,
+          this,
+          virtualModules,
+          options.includeDiagnostics ?? true,
+          novaStyles.scopedStyles,
+        )
         if (novaCanvas) {
           transformed = novaCanvas
           hasTransform = true
@@ -208,14 +215,16 @@ function compileNovaModule(
 function transformVueNovaCanvasTemplates(
   source: string,
   id: string,
+  context: { addWatchFile: (id: string) => void },
   virtualModules: Map<string, VirtualNovaModule>,
-  _includeDiagnostics: boolean,
+  includeDiagnostics: boolean,
   novaStyleBlocks: Array<string> = [],
 ): string | null {
   if (!hasVueNovaCanvasSource(source)) return null
 
   const imports: Array<string> = []
   const replacements: Array<Replacement> = []
+  const diagnostics: Array<{ severity: 'error' | 'warning'; code: string; message: string }> = []
   let index = 0
 
   const sfc = parseVueSfc(source, { filename: id })
@@ -229,6 +238,9 @@ function transformVueNovaCanvasTemplates(
     if (node.tag !== 'NovaCanvas') return
     if (!Array.isArray(node.children)) return
 
+    const mountRequest = readVueStaticAttr(node, 'mount')
+    const dynamicMount = readVueDynamicAttr(node, 'mount')
+    const mountPropsExpression = readVueDynamicAttr(node, 'props')
     const novaSlot = node.children.find((child: any) => getNamedVueTemplateName(child) === 'nova')
     const defaultChildren = node.children.filter((child: any) => (
       !isNamedVueTemplate(child)
@@ -238,13 +250,74 @@ function transformVueNovaCanvasTemplates(
     const novaChildren = novaSlot
       ? novaSlot.children.filter((child: any) => !isEmptyTextNode(child))
       : defaultChildren
-    if (novaChildren.length === 0) return
+    if (dynamicMount) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'dynamic-nova-canvas-mount',
+        message: 'NovaCanvas mount поддерживает только статический путь к .nova файлу.',
+      })
+      return
+    }
+
+    if (mountRequest && novaChildren.length > 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'nova-canvas-mount-inline-conflict',
+        message: 'NovaCanvas не может одновременно использовать mount и inline Nova DSL children.',
+      })
+      return
+    }
+
+    if (mountRequest && !mountRequest.endsWith('.nova')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'nova-canvas-mount-extension',
+        message: 'NovaCanvas mount должен ссылаться на .nova файл.',
+      })
+      return
+    }
+
+    if (!mountRequest && novaChildren.length === 0) return
 
     const componentName = `__NovaTemplate${index}`
     const debugId = `${stripViteQuery(id)}__nova_template_${index}`
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
+    const openingTag = openingSource.trimEnd().endsWith('/>')
+      ? openingSource.replace(/\/>$/, '>')
+      : openingSource
+
+    if (mountRequest) {
+      const resolvedMount = resolveSourceImport(mountRequest, stripViteQuery(id), context)
+      if (!resolvedMount) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'nova-canvas-mount-not-found',
+          message: `Не удалось найти NovaCanvas mount "${mountRequest}".`,
+        })
+        return
+      }
+
+      const mountComponentName = `__NovaMount${index}`
+      imports.push(`import ${mountComponentName} from ${JSON.stringify(mountRequest)};`)
+      const propsBinding = mountPropsExpression ? ` v-bind="${escapeAttr(mountPropsExpression)}"` : ''
+      const marker = `<template #nova><nova-template :component="${mountComponentName}" source="${escapeAttr(mountRequest)}" debug-id="${escapeAttr(debugId)}"${propsBinding} /></template>`
+      const namedSlots = node.children
+        .filter((child: any) => isNamedVueTemplate(child) && getNamedVueTemplateName(child) !== 'nova')
+        .map((child: any) => child.loc.source)
+        .join('\n')
+      const replacement = `${openingTag}\n${marker}${namedSlots ? `\n${namedSlots}` : ''}\n</${node.tag}>`
+
+      replacements.push({
+        start: templateOffset + node.loc.start.offset,
+        end: templateOffset + node.loc.end.offset,
+        value: replacement,
+      })
+      index += 1
+      return
+    }
+
     const rawDefaultSource = novaChildren.map((child: any) => child.loc.source).join('\n').trim()
     const normalizedTemplate = normalizeInlineVueTemplateBindings(rawDefaultSource)
     const defaultSource = normalizedTemplate.source
@@ -271,7 +344,7 @@ function transformVueNovaCanvasTemplates(
       .filter((child: any) => isNamedVueTemplate(child) && getNamedVueTemplateName(child) !== 'nova')
       .map((child: any) => child.loc.source)
       .join('\n')
-    const replacement = `${openingSource}\n${marker}${namedSlots ? `\n${namedSlots}` : ''}\n</${node.tag}>`
+    const replacement = `${openingTag}\n${marker}${namedSlots ? `\n${namedSlots}` : ''}\n</${node.tag}>`
 
     replacements.push({
       start: templateOffset + node.loc.start.offset,
@@ -280,6 +353,9 @@ function transformVueNovaCanvasTemplates(
     })
     index += 1
   })
+
+  emitDiagnostics(id, diagnostics, includeDiagnostics)
+  throwOnErrors(diagnostics)
 
   if (replacements.length === 0) return null
   return injectVueScriptSetupImports(applyReplacements(source, replacements), imports.join('\n'))
@@ -589,6 +665,16 @@ function getNamedVueTemplateName(node: any): string | null {
 function readVueStaticAttr(node: any, name: string): string | null {
   const attr = node.props?.find((prop: any) => prop.type === NodeTypes.ATTRIBUTE && prop.name === name)
   return typeof attr?.value?.content === 'string' ? attr.value.content : null
+}
+
+function readVueDynamicAttr(node: any, name: string): string | null {
+  const attr = node.props?.find((prop: any) => (
+    prop.type === NodeTypes.DIRECTIVE
+    && prop.name === 'bind'
+    && prop.arg?.type === NodeTypes.SIMPLE_EXPRESSION
+    && prop.arg.content === name
+  ))
+  return typeof attr?.exp?.content === 'string' ? attr.exp.content : null
 }
 
 function isEmptyTextNode(node: any): boolean {
