@@ -92,6 +92,13 @@ const COMPONENT_COMPLETIONS = [
   'Nova.Icon',
   'Nova.CanvasTexture',
   'Nova.LinearGradient',
+  'Nova.RadialGradient',
+  'Nova.ConicGradient',
+  'Nova.Pattern',
+  'Nova.Noise',
+  'Nova.MeshGradient',
+  'Nova.NineSliceImage',
+  'Nova.Font',
 ]
 
 const STYLE_COMPLETIONS = [

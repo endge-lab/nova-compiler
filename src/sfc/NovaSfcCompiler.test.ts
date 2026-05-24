@@ -237,6 +237,13 @@ describe('Nova SFC compiler', () => {
             <Nova.Icon id="warningIcon" src="./warning.svg" color="#ef4444" />
             <Nova.CanvasTexture id="heatmapTexture" :source="heatmapCanvas" />
             <Nova.LinearGradient id="taskFade" from="#ffffff" to="rgba(255,255,255,0)" :angle="90" />
+            <Nova.RadialGradient id="spotlight" inner="#ffffff" outer="#2563eb" :radius-x="0.7" />
+            <Nova.ConicGradient id="wheel" from="#22c55e" to="#ef4444" :start-angle="45" />
+            <Nova.Pattern id="tile" src="./tile.png" repeat="repeat-x" />
+            <Nova.Noise id="grain" base-color="rgba(255,255,255,0)" noise-color="#0f172a" :opacity="0.12" />
+            <Nova.MeshGradient id="mesh" background="#ffffff" :points="[{ x: 0.5, y: 0.5, color: '#2563eb' }]" />
+            <Nova.NineSliceImage id="panelFrame" src="./panel.png" :slice="8" />
+            <Nova.Font id="displayFont" family="Nova Display" src="./display.woff2" weight="700" />
           </Nova.Assets>
           <Image src="terminalMap" />
           <Icon icon="warningIcon" :x="0" :y="0" :width="16" :height="16" />
@@ -249,6 +256,9 @@ describe('Nova SFC compiler', () => {
       resolveImport: request => {
         if (request === './terminal.png') return { filename: '/demo/terminal.png', source: '' }
         if (request === './warning.svg') return { filename: '/demo/warning.svg', source: '<svg />' }
+        if (request === './tile.png') return { filename: '/demo/tile.png', source: '' }
+        if (request === './panel.png') return { filename: '/demo/panel.png', source: '' }
+        if (request === './display.woff2') return { filename: '/demo/display.woff2', source: '' }
         return null
       },
     })
@@ -259,12 +269,46 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('__NovaRuntime.assets.svg')
     expect(result.code).toContain('__NovaRuntime.assets.canvas')
     expect(result.code).toContain('__NovaRuntime.assets.linearGradient')
+    expect(result.code).toContain('__NovaRuntime.assets.radialGradient')
+    expect(result.code).toContain('__NovaRuntime.assets.conicGradient')
+    expect(result.code).toContain('__NovaRuntime.assets.pattern')
+    expect(result.code).toContain('__NovaRuntime.assets.noise')
+    expect(result.code).toContain('__NovaRuntime.assets.meshGradient')
+    expect(result.code).toContain('__NovaRuntime.assets.nineSliceImage')
+    expect(result.code).toContain('__NovaRuntime.assets.font')
     expect(result.code).toContain('src:__novaSfcAssets.images.terminalMap')
     expect(result.code).toContain('icon:__novaSfcAssets.icons.warningIcon')
     expect(result.code).toContain('background:__novaSfcAssets.fills.taskFade')
     expect(result.code).toContain('background:__novaSfcAssets.fills.heatmapTexture')
     expect(result.code).not.toContain('type:"Nova.Assets"')
     expect(result.code).not.toContain('type:"Nova.StripePattern"')
+  })
+
+  it('reports required diagnostics for new Nova asset declarations', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Nova.Assets>
+            <Nova.RadialGradient id="radial" />
+            <Nova.ConicGradient id="conic" />
+            <Nova.MeshGradient id="mesh" />
+            <Nova.NineSliceImage id="panel" src="./panel.png" />
+            <Nova.Font id="font" src="./font.woff2" />
+          </Nova.Assets>
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => ({ filename: `/demo/${request}`, source: '' }),
+    })
+
+    expect(result.diagnostics.map(item => item.code)).toEqual(expect.arrayContaining([
+      'radial-gradient-colors',
+      'conic-gradient-colors',
+      'mesh-gradient-points',
+      'nine-slice-image-slice',
+      'font-family',
+    ]))
   })
 
   it('registers imported Nova.Assets bundles in component lifecycle', () => {

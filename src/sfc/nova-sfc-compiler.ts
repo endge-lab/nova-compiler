@@ -120,7 +120,7 @@ interface GenerateContext {
   dependencies?: Set<string>
 }
 
-type NovaAutoAssetKind = 'icon' | 'image' | 'fill'
+type NovaAutoAssetKind = 'icon' | 'image' | 'fill' | 'font'
 
 interface NovaAutoAssetRecord {
   key: string
@@ -196,13 +196,26 @@ const UI_KIT_TAGS = new Set([
   'Tabs',
   'Stepper',
 ])
-const ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
+const ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.woff', '.woff2', '.ttf', '.otf'])
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
 const ASSET_PATH_PROPS = new Set(['src', 'source', 'icon', 'background'])
 const ASSET_OPTION_PROPS = new Set(['asset-color', 'assetColor'])
 const ASSETS_CONTAINER_TAG = 'Nova.Assets'
 const LEGACY_ASSET_DECLARATION_TAGS = new Set(['StripePattern'])
-const NOVA_ASSET_DECLARATION_TAGS = new Set(['Nova.StripePattern', 'Nova.Image', 'Nova.Icon', 'Nova.CanvasTexture', 'Nova.LinearGradient'])
+const NOVA_ASSET_DECLARATION_TAGS = new Set([
+  'Nova.StripePattern',
+  'Nova.Image',
+  'Nova.Icon',
+  'Nova.CanvasTexture',
+  'Nova.LinearGradient',
+  'Nova.RadialGradient',
+  'Nova.ConicGradient',
+  'Nova.Pattern',
+  'Nova.Noise',
+  'Nova.MeshGradient',
+  'Nova.NineSliceImage',
+  'Nova.Font',
+])
 
 function createNovaAutoAssetRegistry(): NovaAutoAssetRegistry {
   return {
@@ -1099,6 +1112,27 @@ function registerAssetDeclaration(node: TemplateNode, context: GenerateContext):
     case 'LinearGradient':
       registerLinearGradientDeclarationAsset(node, id, context)
       break
+    case 'RadialGradient':
+      registerRadialGradientDeclarationAsset(node, id, context)
+      break
+    case 'ConicGradient':
+      registerConicGradientDeclarationAsset(node, id, context)
+      break
+    case 'Pattern':
+      registerPatternDeclarationAsset(node, id, context)
+      break
+    case 'Noise':
+      registerNoiseDeclarationAsset(node, id, context)
+      break
+    case 'MeshGradient':
+      registerMeshGradientDeclarationAsset(node, id, context)
+      break
+    case 'NineSliceImage':
+      registerNineSliceImageDeclarationAsset(node, id, context)
+      break
+    case 'Font':
+      registerFontDeclarationAsset(node, id, context)
+      break
     default:
       break
   }
@@ -1324,6 +1358,182 @@ function registerLinearGradientDeclarationAsset(node: TemplateNode, id: string, 
   })
 }
 
+function registerRadialGradientDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const inner = groupAttr(node, 'inner')
+  const outer = groupAttr(node, 'outer')
+  const stops = groupAttr(node, 'stops')
+  if ((!inner || !outer) && !stops) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'radial-gradient-colors',
+      message: `<${node.tag}> требует inner/outer или stops.`,
+    })
+  }
+
+  const options = buildObjectLiteral([
+    `inner: ${inner || '"transparent"'}`,
+    `outer: ${outer || '"transparent"'}`,
+    optionalObjectEntry(node, 'centerX'),
+    optionalObjectEntry(node, 'centerY'),
+    optionalObjectEntry(node, 'radiusX'),
+    optionalObjectEntry(node, 'radiusY'),
+    stops ? `stops: ${stops}` : '',
+    optionalObjectEntry(node, 'size'),
+  ])
+  const key = `radial-gradient:${id}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'fill',
+    descriptor: `__NovaRuntime.assets.radialGradient(${options})`,
+  })
+}
+
+function registerConicGradientDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const from = groupAttr(node, 'from')
+  const to = groupAttr(node, 'to')
+  const stops = groupAttr(node, 'stops')
+  if ((!from || !to) && !stops) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'conic-gradient-colors',
+      message: `<${node.tag}> требует from/to или stops.`,
+    })
+  }
+
+  const options = buildObjectLiteral([
+    `from: ${from || '"transparent"'}`,
+    `to: ${to || '"transparent"'}`,
+    optionalObjectEntry(node, 'centerX'),
+    optionalObjectEntry(node, 'centerY'),
+    optionalObjectEntry(node, 'startAngle'),
+    stops ? `stops: ${stops}` : '',
+    optionalObjectEntry(node, 'size'),
+  ])
+  const key = `conic-gradient:${id}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'fill',
+    descriptor: `__NovaRuntime.assets.conicGradient(${options})`,
+  })
+}
+
+function registerPatternDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const source = resolveAssetDeclarationSource(node, context, 'fill')
+  const options = buildObjectLiteral([
+    optionalObjectEntry(node, 'repeat'),
+    optionalObjectEntry(node, 'width'),
+    optionalObjectEntry(node, 'height'),
+    optionalObjectEntry(node, 'scale'),
+    optionalObjectEntry(node, 'offsetX'),
+    optionalObjectEntry(node, 'offsetY'),
+  ])
+  const descriptor = `__NovaRuntime.assets.pattern(${source.expression}${options !== '{}' ? `, ${options}` : ''})`
+  const key = `pattern:${id}:${source.key}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'fill',
+    descriptor,
+  })
+}
+
+function registerNoiseDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const options = buildObjectLiteral([
+    optionalObjectEntry(node, 'baseColor'),
+    optionalObjectEntry(node, 'noiseColor'),
+    optionalObjectEntry(node, 'opacity'),
+    optionalObjectEntry(node, 'density'),
+    optionalObjectEntry(node, 'seed'),
+    optionalObjectEntry(node, 'size'),
+  ])
+  const key = `noise:${id}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'fill',
+    descriptor: `__NovaRuntime.assets.noise(${options})`,
+  })
+}
+
+function registerMeshGradientDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const points = groupAttr(node, 'points')
+  if (!points) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'mesh-gradient-points',
+      message: `<${node.tag}> требует :points.`,
+    })
+  }
+
+  const options = buildObjectLiteral([
+    optionalObjectEntry(node, 'background'),
+    `points: ${points || '[]'}`,
+    optionalObjectEntry(node, 'size'),
+  ])
+  const key = `mesh-gradient:${id}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'fill',
+    descriptor: `__NovaRuntime.assets.meshGradient(${options})`,
+  })
+}
+
+function registerNineSliceImageDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const source = resolveAssetDeclarationSource(node, context, 'image')
+  const slice = groupAttr(node, 'slice')
+  if (!slice) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'nine-slice-image-slice',
+      message: `<${node.tag}> требует slice или :slice.`,
+    })
+  }
+
+  const options = buildObjectLiteral([
+    `slice: ${slice || '0'}`,
+    optionalObjectEntry(node, 'width'),
+    optionalObjectEntry(node, 'height'),
+    optionalObjectEntry(node, 'centerMode'),
+  ])
+  const descriptor = `__NovaRuntime.assets.nineSliceImage(${source.expression}, ${options})`
+  const key = `nine-slice-image:${id}:${source.key}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'image',
+    descriptor,
+  })
+}
+
+function registerFontDeclarationAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const family = groupAttr(node, 'family')
+  if (!family) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'font-family',
+      message: `<${node.tag}> требует family.`,
+    })
+  }
+  const source = resolveAssetDeclarationSource(node, context, 'font')
+  const options = buildObjectLiteral([
+    `family: ${family || JSON.stringify(id)}`,
+    `src: ${source.expression}`,
+    optionalObjectEntry(node, 'weight'),
+    optionalObjectEntry(node, 'style'),
+    optionalObjectEntry(node, 'display'),
+  ])
+  const key = `font:${id}:${source.key}:${options}`
+  return registerDeclaredAssetRecord(context, {
+    key,
+    id,
+    kind: 'font',
+    descriptor: `__NovaRuntime.assets.font(${options})`,
+  })
+}
+
 function resolveAssetDeclarationSource(node: TemplateNode, context: GenerateContext, kind: NovaAutoAssetKind): { expression: string; key: string } {
   const dynamicSource = readAttr(node, ':src') ?? readAttr(node, ':source')
   if (dynamicSource) {
@@ -1368,6 +1578,16 @@ function generateAssetDimensionOptions(node: TemplateNode): string {
     height ? `height: ${height}` : '',
   ].filter(Boolean)
   return entries.length ? `{ ${entries.join(', ')} }` : ''
+}
+
+function optionalObjectEntry(node: TemplateNode, name: string, targetName = name): string {
+  const value = groupAttr(node, name)
+  return value ? `${targetName}: ${value}` : ''
+}
+
+function buildObjectLiteral(entries: Array<string>): string {
+  const body = entries.filter(Boolean).join(', ')
+  return `{ ${body} }`
 }
 
 function registerDeclaredAssetRecord(
@@ -1741,6 +1961,7 @@ function generateAutoAssetBundleCode(registry: NovaAutoAssetRegistry): string {
     icon: records.filter(record => record.kind === 'icon'),
     image: records.filter(record => record.kind === 'image'),
     fill: records.filter(record => record.kind === 'fill'),
+    font: records.filter(record => record.kind === 'font'),
   }
   const objectFor = (items: Array<NovaAutoAssetRecord>): string => {
     if (items.length === 0) return ''
@@ -1750,6 +1971,7 @@ function generateAutoAssetBundleCode(registry: NovaAutoAssetRegistry): string {
     byKind.icon.length ? `icons:{${objectFor(byKind.icon)}}` : '',
     byKind.image.length ? `images:{${objectFor(byKind.image)}}` : '',
     byKind.fill.length ? `fills:{${objectFor(byKind.fill)}}` : '',
+    byKind.font.length ? `fonts:{${objectFor(byKind.font)}}` : '',
   ].filter(Boolean)
 
   return `const __novaSfcAssets = __NovaRuntime.assets.define('nova-sfc-${createHash('sha1').update(records.map(record => record.key).join('|')).digest('hex').slice(0, 10)}', {
