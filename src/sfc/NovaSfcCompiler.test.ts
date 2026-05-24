@@ -258,6 +258,42 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('value:group.item.readiness')
   })
 
+  it('compiles TimelineChart.GroupPanel background slot to a panel schema factory', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.GroupPanel>
+            <template #background="{ x, y, width, height, columnRects, visibleGroups, api }">
+              <Rect :x="x" :y="y" :width="width" :height="height" background="#fff" />
+              <Rect
+                for="group in visibleGroups"
+                :x="x"
+                :y="group.y"
+                :width="width"
+                :height="group.height"
+                :background="group.hasChildren ? '#f8fbff' : '#fff'"
+              />
+              <Line
+                for="columnRect in columnRects"
+                :x1="columnRect.x + columnRect.width - 1"
+                :y1="y"
+                :x2="columnRect.x + columnRect.width - 1"
+                :y2="height"
+                :color="api.resolveThemeToken('--line', '#e7edf5')"
+              />
+            </template>
+          </TimelineChart.GroupPanel>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledGroupPanelTemplate:')
+    expect(result.code).toContain('const columnRects = ctx.columnRects')
+    expect(result.code).toContain('__novaFor(visibleGroups)')
+    expect(result.code).toContain('__novaFor(columnRects)')
+  })
+
   it('inlines external template src files inside TimelineChart.GroupPanel without component nodes', () => {
     const result = compileTimelineGroupColumnTemplatesSource(`
       <template src="./groups/GroupPanel.nova" />

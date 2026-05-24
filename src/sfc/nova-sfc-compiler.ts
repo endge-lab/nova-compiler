@@ -1224,6 +1224,12 @@ function validateTemplateNodeList(
       })
     }
 
+    if (node.tag === 'TimelineChart.GroupPanel') {
+      validateTimelineGroupPanelNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
     if (node.tag === 'TimelineChart.GroupColumn') {
       validateTimelineGroupColumnNodes([node], diagnostics)
       previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
@@ -1316,9 +1322,13 @@ function generateSchema(
   const timelineGroupColumnTemplates = isTimelineRootTag(node)
     ? generateTimelineGroupColumnTemplatesProp(node.children, context)
     : ''
+  const timelineGroupPanelTemplate = isTimelineRootTag(node)
+    ? generateTimelineGroupPanelTemplateProp(node.children, context)
+    : ''
   const props = [
     timelineTaskProfiles,
     timelineGroupColumnTemplates,
+    timelineGroupPanelTemplate,
   ].reduce(
     (base, extra) => mergePropsCode(base, extra),
     generateProps(node, context, isCompiledComponent, isTopLevelRoot),
@@ -1452,6 +1462,12 @@ function generateTimelineGroupColumnTemplatesProp(nodes: Array<TemplateNode>, co
   return `compiledGroupColumnTemplates:${generateTimelineGroupColumnTemplates(columns, context)}`
 }
 
+function generateTimelineGroupPanelTemplateProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const panel = collectTimelineGroupPanelNodes(nodes).find(node => node.slots.background)
+  if (!panel?.slots.background) return ''
+  return `compiledGroupPanelTemplate:${generateTimelineGroupPanelTemplate(panel.slots.background.children, context)}`
+}
+
 function mergePropsCode(base: string, extra: string): string {
   if (!extra) return base
   if (!base) return `{${extra}}`
@@ -1475,6 +1491,52 @@ function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<Temp
     }
   }
   return result
+}
+
+function collectTimelineGroupPanelNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
+  const result: Array<TemplateNode> = []
+  for (const node of nodes) {
+    if (node.tag === 'TimelineChart.GroupPanel') {
+      result.push(node)
+      continue
+    }
+    result.push(...collectTimelineGroupPanelNodes(node.children))
+    for (const slot of Object.values(node.slots)) {
+      result.push(...collectTimelineGroupPanelNodes(slot.children))
+    }
+  }
+  return result
+}
+
+function validateTimelineGroupPanelNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    const slotNames = Object.keys(node.slots)
+    for (const slotName of slotNames) {
+      if (slotName !== 'background') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-group-panel-slot',
+          message: 'TimelineChart.GroupPanel поддерживает только #background и вложенные TimelineChart.GroupColumn.',
+        })
+      }
+    }
+
+    for (const child of node.children) {
+      if (child.tag !== 'TimelineChart.GroupColumn' && child.tag !== 'template') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-group-panel-child',
+          message: 'TimelineChart.GroupPanel поддерживает только #background, <template src> и TimelineChart.GroupColumn.',
+        })
+      }
+    }
+
+    validateTimelineGroupColumnSchemaChildren(node.slots.background?.children ?? [], diagnostics)
+    validateTimelineGroupColumnNodes(collectTimelineGroupColumnNodes(node.children), diagnostics)
+  }
 }
 
 function validateTimelineGroupColumnNodes(
@@ -1564,11 +1626,46 @@ function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, contex
   return `{${entries.join(',')}}`
 }
 
+function generateTimelineGroupPanelTemplate(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  return `(__timelineGroupPanel) => {
+    const ctx = __timelineGroupPanel;
+    const x = ctx.x;
+    const y = ctx.y;
+    const width = ctx.width;
+    const height = ctx.height;
+    const columns = ctx.columns;
+    const columnRects = ctx.columnRects;
+    const visibleGroups = ctx.visibleGroups;
+    const api = ctx.api;
+    const chart = ctx.chart;
+    return ${generateTimelineGroupColumnSchemaSequence(nodes, context)};
+  }`
+}
+
 function generateTimelineGroupColumnSchemaSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
   return `[${nodes.map(node => generateTimelineGroupColumnSchemaNode(node, context)).join(',')}].flat().filter(Boolean)`
 }
 
 function generateTimelineGroupColumnSchemaNode(node: TemplateNode, context: GenerateContext): string {
+  const loop = readAttr(node, 'for')
+  if (loop) {
+    const parsed = parseForExpression(loop)
+    if (!parsed) {
+      context.diagnostics.push({
+        severity: 'error',
+        code: 'invalid-for',
+        message: `Некорректное выражение for на <${node.tag}>.`,
+      })
+      return 'null'
+    }
+
+    const attrs = { ...node.attrs }
+    delete attrs.for
+    delete attrs[':for']
+
+    return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => [${generateTimelineGroupColumnSchemaNode({ ...node, attrs }, context)}])`
+  }
+
   const condition = readAttr(node, 'if')
   const schema = generateTimelineGroupColumnSchema(node, context)
   return condition ? `((${condition}) ? ${schema} : null)` : schema
