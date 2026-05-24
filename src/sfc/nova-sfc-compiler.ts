@@ -146,7 +146,17 @@ const UI_KIT_TAGS = new Set([
   'TextBlock',
   'Surface',
   'Button',
+  'Badge',
+  'Input',
+  'TextInput',
+  'PasswordInput',
+  'SearchInput',
+  'NumberInput',
+  'TextArea',
+  'InputField',
+  'SelectInput',
   'Tag',
+  'Image',
   'SplitPane',
   'ScrollArea',
   'Scrollbar',
@@ -263,6 +273,16 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   TextBlock: 'packages/@endge-nova-ui-kit/src/components/TextBlock/TextBlock.ts',
   Surface: 'packages/@endge-nova-ui-kit/src/components/Surface/Surface.ts',
   Button: 'packages/@endge-nova-ui-kit/src/components/Button/Button.ts',
+  Badge: 'packages/@endge-nova-ui-kit/src/components/Badge/Badge.ts',
+  Input: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  TextInput: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  PasswordInput: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  SearchInput: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  NumberInput: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  TextArea: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  InputField: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  SelectInput: 'packages/@endge-nova-ui-kit/src/components/Input/Input.ts',
+  Image: 'packages/@endge-nova-ui-kit/src/components/Image/Image.ts',
   Tag: 'packages/@endge-nova-ui-kit/src/components/Tag/Tag.ts',
   SplitPane: 'packages/@endge-nova-ui-kit/src/components/SplitPane/SplitPane.ts',
   ScrollArea: 'packages/@endge-nova-ui-kit/src/components/ScrollArea/ScrollArea.ts',
@@ -1567,6 +1587,15 @@ function validateTimelineMarkerNodes(
 ): void {
   for (const node of nodes) {
     if (node.tag === 'TimelineChart.Markers') {
+      for (const slotName of Object.keys(node.slots)) {
+        if (slotName !== 'body' && slotName !== 'label') {
+          diagnostics.push({
+            severity: 'error',
+            code: 'timeline-markers-slot',
+            message: 'TimelineChart.Markers поддерживает только #body и #label.',
+          })
+        }
+      }
       for (const child of node.children) {
         if (child.tag !== 'TimelineChart.Marker' && child.tag !== 'template') {
           diagnostics.push({
@@ -1576,6 +1605,8 @@ function validateTimelineMarkerNodes(
           })
         }
       }
+      validateTimelineGroupColumnSchemaChildren(node.slots.body?.children ?? [], diagnostics)
+      validateTimelineGroupColumnSchemaChildren(node.slots.label?.children ?? [], diagnostics)
       validateTimelineMarkerNodes(node.children.filter(child => child.tag === 'TimelineChart.Marker'), diagnostics)
       continue
     }
@@ -1591,16 +1622,18 @@ function validateTimelineMarkerNodes(
     }
 
     for (const slotName of Object.keys(node.slots)) {
-      if (slotName !== 'default') {
+      if (slotName !== 'default' && slotName !== 'body' && slotName !== 'label') {
         diagnostics.push({
           severity: 'error',
           code: 'timeline-marker-slot',
-          message: 'TimelineChart.Marker поддерживает только default slot для renderMarker.',
+          message: 'TimelineChart.Marker поддерживает только #default, #body и #label.',
         })
       }
     }
 
     validateTimelineGroupColumnSchemaChildren(node.slots.default?.children ?? [], diagnostics)
+    validateTimelineGroupColumnSchemaChildren(node.slots.body?.children ?? [], diagnostics)
+    validateTimelineGroupColumnSchemaChildren(node.slots.label?.children ?? [], diagnostics)
   }
 }
 
@@ -1759,6 +1792,37 @@ function generateTimelineMarkersConfig(nodes: Array<TemplateNode>, context: Gene
 
     const defaults = readTimelineMarkerAttr(node, 'defaults')
     if (defaults) entries.push(`placement:${generateTimelineMarkerPlacementFromDefaults(defaults)}`)
+
+    const markerLevelProps = new Set<string>()
+    for (const [attr, target] of [
+      ['create', 'create'],
+      ['labels', 'labels'],
+      ['today', 'today'],
+      ['color', 'color'],
+      ['intervalColor', 'intervalColor'],
+      ['interval-color', 'intervalColor'],
+      ['lineWidth', 'lineWidth'],
+      ['line-width', 'lineWidth'],
+      ['bodyLayer', 'bodyLayer'],
+      ['body-layer', 'bodyLayer'],
+      ['labelLayer', 'labelLayer'],
+      ['label-layer', 'labelLayer'],
+    ] as const) {
+      const value = readTimelineMarkerAttr(node, attr)
+      if (value && !markerLevelProps.has(target)) {
+        markerLevelProps.add(target)
+        entries.push(`${target}:${value}`)
+      }
+    }
+
+    const placement = generateTimelineMarkerPlacementEntry(node)
+    if (placement) entries.push(placement)
+
+    const bodyRenderer = generateTimelineMarkerSlotRenderer(node, context, 'body', 'renderBody')
+    if (bodyRenderer) entries.push(bodyRenderer)
+
+    const labelRenderer = generateTimelineMarkerSlotRenderer(node, context, 'label', 'renderLabel')
+    if (labelRenderer) entries.push(labelRenderer)
   }
 
   if (markerEntries.length > 0) entries.push(`defaultValue:[${markerEntries.join(',')}]`)
@@ -1776,8 +1840,11 @@ function generateTimelineMarkerConfig(node: TemplateNode, context: GenerateConte
     timelineMarkerEntry(node, 'label'),
     timelineMarkerEntry(node, 'color'),
     timelineMarkerEntry(node, 'enabled'),
+    timelineMarkerEntry(node, 'lineWidth') || timelineMarkerEntry(node, 'line-width', 'lineWidth'),
     generateTimelineMarkerPlacementEntry(node),
-    generateTimelineMarkerRenderer(node, context),
+    generateTimelineMarkerSlotRenderer(node, context, 'default', 'renderMarker'),
+    generateTimelineMarkerSlotRenderer(node, context, 'body', 'renderBody'),
+    generateTimelineMarkerSlotRenderer(node, context, 'label', 'renderLabel'),
   ].filter(Boolean)
 
   return `{${entries.join(',')}}`
@@ -1814,11 +1881,16 @@ function generateTimelineMarkerPlacementFromDefaults(defaults: string): string {
   })()`
 }
 
-function generateTimelineMarkerRenderer(node: TemplateNode, context: GenerateContext): string {
-  const slot = node.slots.default
+function generateTimelineMarkerSlotRenderer(
+  node: TemplateNode,
+  context: GenerateContext,
+  slotName: 'default' | 'body' | 'label',
+  targetName: 'renderMarker' | 'renderBody' | 'renderLabel',
+): string {
+  const slot = node.slots[slotName]
   if (!slot) return ''
 
-  return `renderMarker:(__timelineMarker) => {
+  return `${targetName}:(__timelineMarker) => {
     const ctx = __timelineMarker;
     const marker = ctx.marker;
     const rects = ctx.rects;
@@ -2494,7 +2566,13 @@ function generateStaticAssetProp(
     color,
     from: node.filename,
   })
-  return `${quoteKey(propName === 'src' || propName === 'source' ? 'icon' : propName)}:${ref}`
+  return `${quoteKey(resolveStaticAssetPropTarget(node.tag, propName))}:${ref}`
+}
+
+function resolveStaticAssetPropTarget(tag: string, propName: string): string {
+  if (tag === 'Image' && (propName === 'src' || propName === 'source')) return propName
+  if (propName === 'src' || propName === 'source') return 'icon'
+  return propName
 }
 
 function generateHandler(value: string | true): string {

@@ -88,6 +88,31 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics.some(item => item.code === 'missing-key')).toBe(true)
   })
 
+  it('compiles static asset paths for Image and SelectInput aliases', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Image src="./assets/avatar.png" :radius="18" />
+          <SelectInput src="./assets/search.svg" asset-color="#52627a" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/NovaDemo.nova',
+      resolveImport: request => {
+        if (request === './assets/avatar.png') return { filename: '/demo/assets/avatar.png', source: '' }
+        if (request === './assets/search.svg') return { filename: '/demo/assets/search.svg', source: '<svg />' }
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('type:__NovaUIKit.Image')
+    expect(result.code).toContain('src:__novaSfcAssets.images.avatar_')
+    expect(result.code).toContain('type:__NovaUIKit.SelectInput')
+    expect(result.code).toContain('icon:__novaSfcAssets.icons.search_')
+    expect(result.code).toContain('color: "#52627a"')
+  })
+
   it('compiles public if/else-if/else and for syntax', () => {
     const result = compileNovaSfc(`
       <template>
@@ -307,7 +332,12 @@ describe('Nova SFC compiler', () => {
 
       <template>
         <TimelineChart.Root>
-          <TimelineChart.Markers :items="markers">
+          <TimelineChart.Markers
+            :items="markers"
+            :create="{ modifiers: ['alt', 'option'] }"
+            :body-layer="{ anchor: 'chart.beforeTasks', clip: 'tasks' }"
+            :label-layer="{ anchor: 'root.overlay', clip: 'root' }"
+          >
             <TimelineChart.Marker
               id="today"
               kind="today"
@@ -324,9 +354,42 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('compiledMarkers:')
     expect(result.code).toContain('value:markers')
+    expect(result.code).toContain('create:{ modifiers: [\'alt\', \'option\'] }')
+    expect(result.code).toContain('bodyLayer:{ anchor: \'chart.beforeTasks\', clip: \'tasks\' }')
+    expect(result.code).toContain('labelLayer:{ anchor: \'root.overlay\', clip: \'root\' }')
     expect(result.code).toContain('defaultValue:[{id:"today",kind:"today"')
     expect(result.code).toContain('line:{ from: \'tasks.top\', to: \'tasks.bottom\' }')
     expect(result.code).toContain('label:{ anchor: \'timescale.bottom\', align: \'center\', offsetY: 6 }')
+  })
+
+  it('compiles TimelineChart.Markers and Marker body/label slots', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.Markers>
+            <template #body="{ defaultRender }">
+              <Rect :width="10" :height="10" background="#000000" />
+            </template>
+            <template #label="{ defaultRender }">
+              <TextBlock text="Marker" :width="40" :height="14" />
+            </template>
+            <TimelineChart.Marker id="today" kind="today">
+              <template #body="{ rects, timeToPx, state }">
+                <Rect :x="timeToPx(state.now)" :y="rects.tasks.y" :width="2" :height="rects.tasks.height" />
+              </template>
+              <template #label="{ rects }">
+                <TextBlock text="Сегодня" :x="rects.timescale.x" :y="rects.timescale.y" :width="56" :height="16" />
+              </template>
+            </TimelineChart.Marker>
+          </TimelineChart.Markers>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('renderBody:(__timelineMarker)')
+    expect(result.code).toContain('renderLabel:(__timelineMarker)')
+    expect(result.code).toContain('defaultValue:[{id:"today",kind:"today",renderBody:')
   })
 
   it('compiles TimelineChart.Marker slot to renderMarker context', () => {
