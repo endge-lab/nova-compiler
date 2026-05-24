@@ -4,7 +4,11 @@ import type { Plugin } from 'vite'
 import { baseParse, NodeTypes } from '@vue/compiler-dom'
 import { parse as parseVueSfc } from '@vue/compiler-sfc'
 import { compileNovaCss, generateNovaCssModule, serializeStyleAsset } from '../css/nova-css-compiler'
-import { compileNovaSfc, compileTimelineTaskProfilesSource } from '../sfc/nova-sfc-compiler'
+import {
+  compileNovaSfc,
+  compileTimelineGroupColumnTemplatesSource,
+  compileTimelineTaskProfilesSource,
+} from '../sfc/nova-sfc-compiler'
 
 export interface NovaGeneratedOutputOptions {
   enabled?: boolean
@@ -309,12 +313,14 @@ function transformVueTimelineChartProfiles(
     const children = Array.isArray(node.children) ? node.children : []
 
     const profileChildren = children.filter((child: any) => isTimelineTaskProfileVueNode(child))
+    const groupTemplateChildren = children.filter((child: any) => isTimelineGroupTemplateVueNode(child, cleanId, context))
     const rootChildren = children.filter((child: any) => (
       !isTimelineTaskProfileVueNode(child)
+      && !isTimelineGroupTemplateVueNode(child, cleanId, context)
       && !isEmptyTextNode(child)
     ))
     const shouldInjectStyleSheet = novaStyleBlocks.length > 0 && !hasVueStyleSheetProp(node)
-    if (profileChildren.length === 0 && rootChildren.length === 0 && !shouldInjectStyleSheet) return
+    if (profileChildren.length === 0 && groupTemplateChildren.length === 0 && rootChildren.length === 0 && !shouldInjectStyleSheet) return
 
     let profilesProp = ''
     if (profileChildren.length > 0) {
@@ -323,6 +329,7 @@ function transformVueTimelineChartProfiles(
         filename: id,
         resolveImport: (request, from) => resolveSourceImport(request, from, context),
       })
+      for (const dependency of result.dependencies) context.addWatchFile(dependency)
       emitDiagnostics(id, result.diagnostics, includeDiagnostics)
       throwOnErrors(result.diagnostics)
 
@@ -352,6 +359,28 @@ function transformVueTimelineChartProfiles(
       rootChildrenProp = ` :compiled-root-children="[{ type: ${componentName}${props ? `, ${props}` : ''} }]"`
     }
 
+    let groupColumnTemplatesProp = ''
+    if (groupTemplateChildren.length > 0) {
+      const groupTemplatesSource = groupTemplateChildren.map((child: any) => child.loc.source).join('\n')
+      const result = compileTimelineGroupColumnTemplatesSource(groupTemplatesSource, {
+        filename: id,
+        resolveImport: (request, from) => resolveSourceImport(request, from, context),
+      })
+      for (const dependency of result.dependencies) context.addWatchFile(dependency)
+      emitDiagnostics(id, result.diagnostics, includeDiagnostics)
+      throwOnErrors(result.diagnostics)
+
+      const constName = `__timelineGroupColumnTemplates${index}`
+      if (
+        result.code.includes('__NovaUIKit.')
+        && !imports.includes('import { NovaUIKit as __NovaUIKit } from "@endge/nova-ui-kit";')
+      ) {
+        imports.push('import { NovaUIKit as __NovaUIKit } from "@endge/nova-ui-kit";')
+      }
+      declarations.push(`const ${constName} = ${result.code};`)
+      groupColumnTemplatesProp = ` :compiled-group-column-templates="${constName}"`
+    }
+
     let styleSheetProp = ''
     if (shouldInjectStyleSheet) {
       if (!timelineStyleAssetName) {
@@ -369,7 +398,7 @@ function transformVueTimelineChartProfiles(
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
-    const injectedProps = `${profilesProp}${rootChildrenProp}${styleSheetProp}`
+    const injectedProps = `${profilesProp}${rootChildrenProp}${groupColumnTemplatesProp}${styleSheetProp}`
     const openingWithProfiles = openingSource.trimEnd().endsWith('/>')
       ? openingSource.replace(/\/>$/, `${injectedProps}>`)
       : openingSource.replace(/>$/, `${injectedProps}>`)
@@ -529,6 +558,22 @@ function isTimelineTaskProfileVueNode(node: any): boolean {
   return node.type === NodeTypes.ELEMENT && node.tag === 'TimelineTaskProfile'
 }
 
+function isTimelineGroupTemplateVueNode(
+  node: any,
+  ownerFile: string,
+  context: { addWatchFile: (id: string) => void },
+): boolean {
+  if (node.type !== NodeTypes.ELEMENT) return false
+  if (node.tag === 'TimelineChart.GroupPanel' || node.tag === 'TimelineChart.GroupColumn') return true
+  if (node.tag !== 'template') return false
+
+  const src = readVueStaticAttr(node, 'src')
+  if (!src) return false
+
+  const imported = resolveSourceImport(src, ownerFile, context)
+  return !!imported?.source.includes('TimelineChart.Group')
+}
+
 function isNamedVueTemplate(node: any): boolean {
   return node.type === NodeTypes.ELEMENT
     && node.tag === 'template'
@@ -539,6 +584,11 @@ function getNamedVueTemplateName(node: any): string | null {
   if (!isNamedVueTemplate(node)) return null
   const slot = node.props.find((prop: any) => prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot')
   return typeof slot?.arg?.content === 'string' ? slot.arg.content : 'default'
+}
+
+function readVueStaticAttr(node: any, name: string): string | null {
+  const attr = node.props?.find((prop: any) => prop.type === NodeTypes.ATTRIBUTE && prop.name === name)
+  return typeof attr?.value?.content === 'string' ? attr.value.content : null
 }
 
 function isEmptyTextNode(node: any): boolean {

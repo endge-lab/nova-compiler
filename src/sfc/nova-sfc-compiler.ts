@@ -178,6 +178,8 @@ const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
 const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
 const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Text', 'TextBlock'])
+const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupPanel', 'TimelineChart.GroupColumn'])
+const TIMELINE_GROUP_SCHEMA_TAGS = new Set(['Rect', 'Line', 'Circle', 'Icon', 'Text', 'TextBlock', 'ProgressRing'])
 const CORE_DSL_TAGS: Record<string, string> = {
   Scenes: 'nova.scenes',
   Scene: 'nova.scene',
@@ -203,6 +205,12 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
 }
 
 export interface TimelineTaskProfilesCompileResult {
+  code: string
+  diagnostics: Array<NovaUiStyleDiagnostic>
+  dependencies: Array<string>
+}
+
+export interface TimelineGroupColumnTemplatesCompileResult {
   code: string
   diagnostics: Array<NovaUiStyleDiagnostic>
   dependencies: Array<string>
@@ -234,6 +242,38 @@ export function compileTimelineTaskProfilesSource(
 
   return {
     code: generateTimelineTaskProfiles(nodes, context),
+    diagnostics,
+    dependencies: [...dependencies],
+  }
+}
+
+/**
+ * Компилирует декларативные TimelineChart.GroupColumn nodes в schema factories.
+ */
+export function compileTimelineGroupColumnTemplatesSource(
+  source: string,
+  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport'> = {},
+): TimelineGroupColumnTemplatesCompileResult {
+  const diagnostics: Array<NovaUiStyleDiagnostic> = []
+  const dependencies = new Set<string>()
+  const nodes = parseTemplate(source, diagnostics, 0, {
+    filename: options.filename,
+    resolveImport: options.resolveImport,
+    dependencies,
+  })
+  const columns = collectTimelineGroupColumnNodes(nodes)
+  validateTimelineGroupColumnNodes(columns, diagnostics)
+
+  const context: GenerateContext = {
+    diagnostics,
+    importedRuntimeSymbols: new Set(),
+    generatedImports: [],
+    componentImports: new Map(),
+    hasScopedStyles: false,
+  }
+
+  return {
+    code: generateTimelineGroupColumnTemplates(columns, context),
     diagnostics,
     dependencies: [...dependencies],
   }
@@ -895,6 +935,7 @@ function validateTemplateNodeList(
       && !PRIMITIVE_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_MARKER_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
+      && !TIMELINE_GROUP_MARKER_TAGS.has(node.tag)
       && !node.tag.includes('.')
       && !isComponentInclude
       && !isImportedComponent
@@ -946,6 +987,12 @@ function validateTemplateNodeList(
         code: 'orphan-else',
         message: `else/else-if на <${node.tag}> должен идти после if.`,
       })
+    }
+
+    if (node.tag === 'TimelineChart.GroupColumn') {
+      validateTimelineGroupColumnNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
     }
 
     validateTemplateNodeList(node.children, diagnostics, options)
@@ -1025,14 +1072,20 @@ function generateSchema(
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile')
+    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile' && !isTimelineGroupTemplateNode(child))
     : node.children
   const timelineTaskProfiles = isTimelineRootTag(node)
     ? generateTimelineTaskProfilesProp(node.children, context)
     : ''
-  const props = mergePropsCode(
-    generateProps(node, context, isCompiledComponent, isTopLevelRoot),
+  const timelineGroupColumnTemplates = isTimelineRootTag(node)
+    ? generateTimelineGroupColumnTemplatesProp(node.children, context)
+    : ''
+  const props = [
     timelineTaskProfiles,
+    timelineGroupColumnTemplates,
+  ].reduce(
+    (base, extra) => mergePropsCode(base, extra),
+    generateProps(node, context, isCompiledComponent, isTopLevelRoot),
   )
   const events = generateEvents(node, isCompiledComponent)
   const children = childNodes.length > 0 && !isCompiledComponent
@@ -1132,10 +1185,287 @@ function generateTimelineTaskProfilesProp(nodes: Array<TemplateNode>, context: G
   return `taskProfiles:${generateTimelineTaskProfiles(profileNodes, context)}`
 }
 
+function generateTimelineGroupColumnTemplatesProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const columns = collectTimelineGroupColumnNodes(nodes)
+  if (columns.length === 0) return ''
+  return `compiledGroupColumnTemplates:${generateTimelineGroupColumnTemplates(columns, context)}`
+}
+
 function mergePropsCode(base: string, extra: string): string {
   if (!extra) return base
   if (!base) return `{${extra}}`
   return `${base.slice(0, -1)},${extra}}`
+}
+
+function isTimelineGroupTemplateNode(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.GroupPanel' || node.tag === 'TimelineChart.GroupColumn'
+}
+
+function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
+  const result: Array<TemplateNode> = []
+  for (const node of nodes) {
+    if (node.tag === 'TimelineChart.GroupColumn') {
+      result.push(node)
+      continue
+    }
+    result.push(...collectTimelineGroupColumnNodes(node.children))
+    for (const slot of Object.values(node.slots)) {
+      result.push(...collectTimelineGroupColumnNodes(slot.children))
+    }
+  }
+  return result
+}
+
+function validateTimelineGroupColumnNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (!readAttr(node, 'id')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-group-column-id',
+        message: '<TimelineChart.GroupColumn> требует статический id.',
+      })
+    }
+
+    const slotNames = Object.keys(node.slots)
+    for (const slotName of slotNames) {
+      if (slotName !== 'cell' && slotName !== 'header') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-group-column-slot',
+          message: 'TimelineChart.GroupColumn поддерживает только #cell и #header.',
+        })
+      }
+    }
+
+    validateTimelineGroupColumnSchemaChildren(node.slots.cell?.children ?? [], diagnostics)
+    validateTimelineGroupColumnSchemaChildren(node.slots.header?.children ?? [], diagnostics)
+  }
+}
+
+function validateTimelineGroupColumnSchemaChildren(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (!TIMELINE_GROUP_SCHEMA_TAGS.has(node.tag)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-group-column-unsupported-node',
+        message: `TimelineChart.GroupColumn schema slots поддерживают только Rect, Line, Circle, Icon, Text, TextBlock и ProgressRing. Получен <${node.tag}>.`,
+      })
+      continue
+    }
+    validateTimelineGroupColumnSchemaChildren(node.children, diagnostics)
+  }
+}
+
+function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const entries = nodes.map(node => {
+    const id = readAttr(node, 'id') ?? ''
+    const cell = node.slots.cell
+      ? `cell:(__timelineGroupColumn) => {
+          const ctx = __timelineGroupColumn;
+          const group = ctx.group;
+          const column = ctx.column;
+          const data = ctx.data;
+          const x = ctx.x;
+          const y = ctx.y;
+          const width = ctx.width;
+          const height = ctx.height;
+          const treeDisclosureColumn = ctx.treeDisclosureColumn;
+          const treeIndent = ctx.treeIndent;
+          const api = ctx.api;
+          const chart = ctx.chart;
+          return ${generateTimelineGroupColumnSchemaSequence(cell.children, context)};
+        }`
+      : ''
+    const header = node.slots.header
+      ? `header:(__timelineGroupColumnHeader) => {
+          const ctx = __timelineGroupColumnHeader;
+          const column = ctx.column;
+          const x = ctx.x;
+          const y = ctx.y;
+          const width = ctx.width;
+          const height = ctx.height;
+          const api = ctx.api;
+          const chart = ctx.chart;
+          return ${generateTimelineGroupColumnSchemaSequence(header.children, context)};
+        }`
+      : ''
+    return `${quoteKey(id)}:{${[cell, header].filter(Boolean).join(',')}}`
+  })
+
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupColumnSchemaSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  return `[${nodes.map(node => generateTimelineGroupColumnSchemaNode(node, context)).join(',')}].flat().filter(Boolean)`
+}
+
+function generateTimelineGroupColumnSchemaNode(node: TemplateNode, context: GenerateContext): string {
+  const condition = readAttr(node, 'if')
+  const schema = generateTimelineGroupColumnSchema(node, context)
+  return condition ? `((${condition}) ? ${schema} : null)` : schema
+}
+
+function generateTimelineGroupColumnSchema(node: TemplateNode, context: GenerateContext): string {
+  if (node.tag === 'Rect') return generateTimelineGroupRectSchema(node)
+  if (node.tag === 'Line') return generateTimelineGroupLineSchema(node)
+  if (node.tag === 'Circle') return generateTimelineGroupCircleSchema(node)
+  if (node.tag === 'Icon') return generateTimelineGroupIconSchema(node)
+  if (node.tag === 'Text' || node.tag === 'TextBlock') return generateTimelineGroupTextSchema(node)
+  if (node.tag === 'ProgressRing') return generateTimelineGroupProgressRingSchema(node)
+
+  context.diagnostics.push({
+    severity: 'error',
+    code: 'timeline-group-column-unsupported-node',
+    message: `TimelineChart.GroupColumn schema slots поддерживают только Rect, Line, Circle, Icon, Text, TextBlock и ProgressRing. Получен <${node.tag}>.`,
+  })
+  return 'null'
+}
+
+function generateTimelineGroupRectSchema(node: TemplateNode): string {
+  const styleEntries = [
+    groupStyleEntry(node, 'background'),
+    groupStyleEntry(node, 'radius'),
+    groupStyleEntry(node, 'border'),
+    groupStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'rect\'',
+    `x:${groupAttr(node, 'x', 'x')}`,
+    `y:${groupAttr(node, 'y', 'y')}`,
+    `width:${groupAttr(node, 'width', 'width')}`,
+    `height:${groupAttr(node, 'height', 'height')}`,
+    ...groupCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupLineSchema(node: TemplateNode): string {
+  const styleEntries = [
+    groupStyleEntry(node, 'color'),
+    groupStyleEntry(node, 'width'),
+    groupStyleEntry(node, 'dashPattern'),
+    groupStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'line\'',
+    `x1:${groupAttr(node, 'x1', 'x')}`,
+    `y1:${groupAttr(node, 'y1', 'y')}`,
+    `x2:${groupAttr(node, 'x2', 'x + width')}`,
+    `y2:${groupAttr(node, 'y2', 'y')}`,
+    ...groupCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupCircleSchema(node: TemplateNode): string {
+  const styleEntries = [
+    groupStyleEntry(node, 'background'),
+    groupStyleEntry(node, 'border'),
+    groupStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'circle\'',
+    `x:${groupAttr(node, 'x', 'x')}`,
+    `y:${groupAttr(node, 'y', 'y')}`,
+    `radius:${groupAttr(node, 'radius', '4')}`,
+    ...groupCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupIconSchema(node: TemplateNode): string {
+  const styleEntries = [
+    groupStyleEntry(node, 'opacity'),
+    groupStyleEntry(node, 'quality'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'icon\'',
+    `icon:${groupAttr(node, 'icon', "''")}`,
+    `x:${groupAttr(node, 'x', 'x')}`,
+    `y:${groupAttr(node, 'y', 'y')}`,
+    `width:${groupAttr(node, 'width', 'width')}`,
+    `height:${groupAttr(node, 'height', 'height')}`,
+    ...groupCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupTextSchema(node: TemplateNode): string {
+  const styleEntries = [
+    groupStyleEntry(node, 'color'),
+    groupStyleEntry(node, 'font'),
+    groupStyleEntry(node, 'lineHeight'),
+    groupStyleEntry(node, 'padding'),
+    groupStyleEntry(node, 'align'),
+    groupStyleEntry(node, 'ellipsis'),
+    groupStyleEntry(node, 'opacity'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'text\'',
+    `text:${groupAttr(node, 'text', "''")}`,
+    `x:${groupAttr(node, 'x', 'x')}`,
+    `y:${groupAttr(node, 'y', 'y')}`,
+    `width:${groupAttr(node, 'width', 'width')}`,
+    `height:${groupAttr(node, 'height', 'height')}`,
+    ...groupCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupProgressRingSchema(node: TemplateNode): string {
+  const entries = [
+    `x:${groupAttr(node, 'x', 'x')}`,
+    `y:${groupAttr(node, 'y', 'y')}`,
+    `value:${groupAttr(node, 'value', '0')}`,
+    groupEntry(node, 'size'),
+    groupEntry(node, 'strokeWidth') || groupEntry(node, 'stroke-width', 'strokeWidth'),
+    groupEntry(node, 'color'),
+    groupEntry(node, 'trackColor') || groupEntry(node, 'track-color', 'trackColor'),
+    groupEntry(node, 'opacity'),
+    groupEntry(node, 'lineCap') || groupEntry(node, 'line-cap', 'lineCap'),
+  ].filter(Boolean)
+  return `__NovaUIKit.progressRingSchema({${entries.join(',')}})`
+}
+
+function groupCommonEntries(node: TemplateNode): Array<string> {
+  return [
+    groupEntry(node, 'active'),
+    groupEntry(node, 'clip'),
+    groupEntry(node, 'meta'),
+  ].filter(Boolean)
+}
+
+function groupStyleEntry(node: TemplateNode, name: string): string {
+  const value = groupAttr(node, name)
+  return value ? `${quoteKey(name)}:${value}` : ''
+}
+
+function groupEntry(node: TemplateNode, name: string, targetName = name): string {
+  const value = groupAttr(node, name)
+  return value ? `${quoteKey(targetName)}:${value}` : ''
+}
+
+function groupAttr(node: TemplateNode, name: string, fallback?: string): string {
+  const normalizedName = normalizeDslPropName(name)
+  const dynamic = readAttr(node, `:${name}`) ?? readAttr(node, `:${normalizedName}`)
+  if (dynamic !== undefined) return dynamic
+  const staticValue = readAttr(node, name) ?? readAttr(node, normalizedName)
+  if (staticValue !== undefined) return serializeStaticAttr(staticValue)
+  if (Object.prototype.hasOwnProperty.call(node.attrs, name) || Object.prototype.hasOwnProperty.call(node.attrs, normalizedName)) {
+    return 'true'
+  }
+  return fallback ?? ''
 }
 
 function validateTimelineTaskProfileNodes(

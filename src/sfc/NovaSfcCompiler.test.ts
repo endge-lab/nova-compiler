@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { compileNovaSfc, compileTimelineTaskProfilesSource } from '@/sfc/nova-sfc-compiler'
+import {
+  compileNovaSfc,
+  compileTimelineGroupColumnTemplatesSource,
+  compileTimelineTaskProfilesSource,
+} from '@/sfc/nova-sfc-compiler'
 
 describe('Nova SFC compiler', () => {
   it('generates a NovaNode class with setup, keyed loop and scoped style asset', () => {
@@ -175,6 +179,92 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain("type:'rect'")
     expect(result.code).toContain("type:'text'")
     expect(result.code).toContain('text:task.title')
+  })
+
+  it('compiles TimelineChart.GroupColumn cell and header slots to schema factories', () => {
+    const result = compileTimelineGroupColumnTemplatesSource(`
+      <TimelineChart.GroupPanel>
+        <TimelineChart.GroupColumn id="readiness">
+          <template #header="{ column, x, y, width, height }">
+            <TextBlock :text="column.title" :x="x" :y="y" :width="width" :height="height" />
+          </template>
+
+          <template #cell="{ group, x, y, width, height }">
+            <ProgressRing
+              :x="x + 14"
+              :y="y + 4"
+              :value="group.item.readiness"
+              :size="14"
+              :stroke-width="2"
+              color="#10b981"
+            />
+            <TextBlock :text="`${group.item.readiness}%`" :x="x + 32" :y="y" :width="width - 32" :height="height" />
+          </template>
+        </TimelineChart.GroupColumn>
+      </TimelineChart.GroupPanel>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('readiness:{')
+    expect(result.code).toContain('header:(__timelineGroupColumnHeader)')
+    expect(result.code).toContain('cell:(__timelineGroupColumn)')
+    expect(result.code).toContain('__NovaUIKit.progressRingSchema')
+    expect(result.code).toContain('value:group.item.readiness')
+  })
+
+  it('inlines external template src files inside TimelineChart.GroupPanel without component nodes', () => {
+    const result = compileTimelineGroupColumnTemplatesSource(`
+      <template src="./groups/GroupPanel.nova" />
+    `, {
+      filename: '/demo/App.vue',
+      resolveImport: request => {
+        if (request === './groups/GroupPanel.nova') {
+          return {
+            filename: '/demo/groups/GroupPanel.nova',
+            source: `
+              <template>
+                <TimelineChart.GroupPanel>
+                  <template src="./columns/StatusColumn.nova" />
+                </TimelineChart.GroupPanel>
+              </template>
+            `,
+          }
+        }
+        if (request === './columns/StatusColumn.nova') {
+          return {
+            filename: '/demo/groups/columns/StatusColumn.nova',
+            source: `
+              <template>
+                <TimelineChart.GroupColumn id="status">
+                  <template #cell="{ group, x, y, width, height }">
+                    <Circle :x="x + 8" :y="y + 8" :radius="4" :background="group.item.color" />
+                  </template>
+                </TimelineChart.GroupColumn>
+              </template>
+            `,
+          }
+        }
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/groups/GroupPanel.nova', '/demo/groups/columns/StatusColumn.nova'])
+    expect(result.code).toContain('status:{')
+    expect(result.code).toContain("type:'circle'")
+    expect(result.code).not.toContain('type:__NovaComponent')
+  })
+
+  it('reports non-schema components inside TimelineChart.GroupColumn schema slots', () => {
+    const result = compileTimelineGroupColumnTemplatesSource(`
+      <TimelineChart.GroupColumn id="status">
+        <template #cell="{ group }">
+          <Button :text="group.item.title" />
+        </template>
+      </TimelineChart.GroupColumn>
+    `)
+
+    expect(result.diagnostics.some(item => item.code === 'timeline-group-column-unsupported-node')).toBe(true)
   })
 
   it('compiles TimelineTaskProfile Rect radius as an independent style', () => {
