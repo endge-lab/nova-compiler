@@ -263,14 +263,14 @@ describe('Nova SFC compiler', () => {
       <template>
         <TimelineChart.Root>
           <TimelineChart.GroupPanel>
-            <template #background="{ x, y, width, height, columnRects, visibleGroups, api }">
+            <template #background="{ x, y, width, height, bodyY, bodyHeight, columnRects, visibleGroups, api }">
               <Rect :x="x" :y="y" :width="width" :height="height" background="#fff" />
               <Rect
                 for="group in visibleGroups"
                 :x="x"
-                :y="group.y"
+                :y="Math.max(group.y, bodyY)"
                 :width="width"
-                :height="group.height"
+                :height="Math.max(0, Math.min(group.y + group.height, bodyY + bodyHeight) - Math.max(group.y, bodyY))"
                 :background="group.hasChildren ? '#f8fbff' : '#fff'"
               />
             </template>
@@ -293,6 +293,8 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('compiledGroupPanelTemplate:')
     expect(result.code).toContain('compiledGroupPanelOverlayTemplate:')
     expect(result.code).toContain('const columnRects = ctx.columnRects')
+    expect(result.code).toContain('const bodyY = ctx.bodyY')
+    expect(result.code).toContain('const bodyHeight = ctx.bodyHeight')
     expect(result.code).toContain('__novaFor(visibleGroups)')
     expect(result.code).toContain('__novaFor(columnRects)')
   })

@@ -1730,6 +1730,9 @@ function generateTimelineGroupPanelTemplate(nodes: Array<TemplateNode>, context:
     const y = ctx.y;
     const width = ctx.width;
     const height = ctx.height;
+    const headerHeight = ctx.headerHeight;
+    const bodyY = ctx.bodyY;
+    const bodyHeight = ctx.bodyHeight;
     const columns = ctx.columns;
     const columnRects = ctx.columnRects;
     const visibleGroups = ctx.visibleGroups;
