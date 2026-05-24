@@ -78,6 +78,25 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain('export default asset')
   })
 
+  it('resolves @ asset imports from configured source root', async () => {
+    const projectDir = createTempDir()
+    const sourceRoot = path.join(projectDir, 'src')
+    const iconPath = path.join(sourceRoot, 'assets/icons/check.svg')
+    fs.mkdirSync(path.dirname(iconPath), { recursive: true })
+    fs.writeFileSync(iconPath, '<svg viewBox="0 0 24 24"></svg>', 'utf8')
+
+    const plugin = novaVitePlugin({ sourceRoot })
+
+    const result = await runTransform(
+      plugin,
+      '<template><Root><Icon src="@/assets/icons/check.svg" /></Root></template>',
+      path.join(sourceRoot, 'ui/Demo.nova'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain(`${iconPath}?raw`)
+  })
+
   it('transforms NovaCanvas default slot DSL into a virtual module import', async () => {
     const outputDir = createTempDir()
     const plugin = novaVitePlugin({
@@ -612,13 +631,13 @@ describe('Nova Vite plugin generated debug output', () => {
 
         <template>
           <TimelineChart :data="data">
-            <TimelineChart.GroupPanel>
+            <TimelineChart.GroupsPanel>
               <TimelineChart.GroupColumn id="status">
                 <template #cell="{ group, x, y, width, height }">
                   <Circle :x="x + 8" :y="y + 8" :radius="4" :background="group.item.color" />
                 </template>
               </TimelineChart.GroupColumn>
-            </TimelineChart.GroupPanel>
+            </TimelineChart.GroupsPanel>
           </TimelineChart>
         </template>
       `,
@@ -630,7 +649,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).toContain(':compiled-group-column-templates="__timelineGroupColumnTemplates0"')
     expect(code).toContain('status:{')
     expect(code).toContain("type:'circle'")
-    expect(code).not.toContain('<TimelineChart.GroupPanel')
+    expect(code).not.toContain('<TimelineChart.GroupsPanel')
   })
 
   it('passes TimelineTaskProfile children to TimelineChart.Root inside NovaCanvas DSL', async () => {
@@ -669,7 +688,7 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).not.toContain('type:"TimelineTaskProfile"')
   })
 
-  it('passes external TimelineChart.GroupPanel templates to TimelineChart.Root inside NovaCanvas DSL', async () => {
+  it('passes external TimelineChart.GroupsPanel templates to TimelineChart.Root inside NovaCanvas DSL', async () => {
     const plugin = novaVitePlugin()
     const dir = createTempDir()
     const pageFile = path.join(dir, 'TimelineRootGroups.vue')
@@ -678,13 +697,11 @@ describe('Nova Vite plugin generated debug output', () => {
     fs.mkdirSync(groupDir, { recursive: true })
     fs.writeFileSync(path.join(groupDir, 'GroupPanel.nova'), `
       <template>
-        <TimelineChart.GroupPanel>
-          <TimelineChart.GroupColumn id="status">
-            <template #cell="{ group, x, y }">
-              <Circle :x="x + 8" :y="y + 8" :radius="4" :background="group.item.color" />
-            </template>
-          </TimelineChart.GroupColumn>
-        </TimelineChart.GroupPanel>
+        <TimelineChart.GroupColumn id="status">
+          <template #cell="{ group, x, y }">
+            <Circle :x="x + 8" :y="y + 8" :radius="4" :background="group.item.color" />
+          </template>
+        </TimelineChart.GroupColumn>
       </template>
     `)
 
@@ -694,7 +711,9 @@ describe('Nova Vite plugin generated debug output', () => {
         <template>
           <NovaCanvas>
             <TimelineChart.Root>
-              <template src="./templates/groups/GroupPanel.nova" />
+              <TimelineChart.GroupsPanel :layout="{ width: 220, height: 'fill' }">
+                <template src="./templates/groups/GroupPanel.nova" />
+              </TimelineChart.GroupsPanel>
             </TimelineChart.Root>
           </NovaCanvas>
         </template>
@@ -710,7 +729,8 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).toContain('compiledGroupColumnTemplates:{')
     expect(compiled).toContain('status:{')
     expect(compiled).toContain("type:'circle'")
-    expect(compiled).not.toContain('type:"TimelineChart.GroupPanel"')
+    expect(compiled).toContain('type:"TimelineChart.GroupsPanel"')
+    expect(compiled).not.toContain('type:"TimelineChart.GroupColumn"')
   })
 
   it('keeps TimelineChart.Root runtime children when extracting task profiles', async () => {

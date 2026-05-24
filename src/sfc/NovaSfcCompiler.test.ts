@@ -180,6 +180,89 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain('type:__NovaComponent')
   })
 
+  it('inlines imported .nova schema fragments with nova:schema directive', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Markers from './plugins/Markers.nova'
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <Markers nova:schema />
+        </TimelineChart.Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './plugins/Markers.nova'
+        ? {
+            filename: '/demo/plugins/Markers.nova',
+            source: `
+              <template>
+                <TimelineChart.Markers :create="{ modifiers: ['alt'] }">
+                  <TimelineChart.Marker id="today" kind="today" label="Сегодня" color="#1d73ff" />
+                </TimelineChart.Markers>
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/plugins/Markers.nova'])
+    expect(result.code).toContain('compiledMarkers:')
+    expect(result.code).toContain('create:{ modifiers: [\'alt\'] }')
+    expect(result.code).toContain('defaultValue:[{id:"today",kind:"today"')
+    expect(result.code).not.toContain("import Markers from './plugins/Markers.nova'")
+    expect(result.code).not.toContain('type:Markers')
+  })
+
+  it('reports invalid nova:schema usage', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import NotNova from './plain.ts'
+      </script>
+
+      <template>
+        <Root>
+          <Missing nova:schema />
+          <NotNova nova:schema />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+    })
+
+    expect(result.diagnostics.map(item => item.code)).toEqual(expect.arrayContaining([
+      'nova-schema-import-missing',
+      'nova-schema-source',
+    ]))
+  })
+
+  it('keeps nova:inline as a legacy alias for nova:schema', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Markers from './plugins/Markers.nova'
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <Markers nova:inline />
+        </TimelineChart.Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './plugins/Markers.nova'
+        ? {
+            filename: '/demo/plugins/Markers.nova',
+            source: '<template><TimelineChart.Markers /></template>',
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledMarkers:')
+  })
+
   it('collects static SVG assets into an auto Nova asset bundle with dedupe', () => {
     const result = compileNovaSfc(`
       <template>
@@ -368,7 +451,7 @@ describe('Nova SFC compiler', () => {
 
   it('compiles TimelineChart.GroupColumn cell and header slots to schema factories', () => {
     const result = compileTimelineGroupColumnTemplatesSource(`
-      <TimelineChart.GroupPanel>
+      <TimelineChart.GroupsPanel>
         <TimelineChart.GroupColumn id="readiness">
           <template #header="{ column, x, y, width, height }">
             <TextBlock :text="column.title" :x="x" :y="y" :width="width" :height="height" />
@@ -386,7 +469,7 @@ describe('Nova SFC compiler', () => {
             <TextBlock :text="String(group.item.readiness) + '%'" :x="x + 32" :y="y" :width="width - 32" :height="height" />
           </template>
         </TimelineChart.GroupColumn>
-      </TimelineChart.GroupPanel>
+      </TimelineChart.GroupsPanel>
     `)
 
     expect(result.diagnostics).toHaveLength(0)
@@ -397,11 +480,11 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('value:group.item.readiness')
   })
 
-  it('compiles TimelineChart.GroupPanel background slot to a panel schema factory', () => {
+  it('compiles TimelineChart.GroupsPanel background slot to a panel schema factory', () => {
     const result = compileNovaSfc(`
       <template>
         <TimelineChart.Root>
-          <TimelineChart.GroupPanel>
+          <TimelineChart.GroupsPanel>
             <template #background="{ x, y, width, height, bodyY, bodyHeight, columnRects, visibleGroups, api }">
               <Rect :x="x" :y="y" :width="width" :height="height" background="#fff" />
               <Rect
@@ -423,7 +506,7 @@ describe('Nova SFC compiler', () => {
                 :color="api.resolveThemeToken('--line', '#e7edf5')"
               />
             </template>
-          </TimelineChart.GroupPanel>
+          </TimelineChart.GroupsPanel>
         </TimelineChart.Root>
       </template>
     `)
@@ -436,6 +519,86 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('const bodyHeight = ctx.bodyHeight')
     expect(result.code).toContain('__novaFor(visibleGroups)')
     expect(result.code).toContain('__novaFor(columnRects)')
+  })
+
+  it('inlines imported nova:schema fragments inside TimelineChart.GroupsPanel', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import GroupPanel from './groups/GroupPanel.nova'
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.GroupsPanel :layout="{ width: 220, height: 'fill' }">
+            <GroupPanel nova:schema />
+          </TimelineChart.GroupsPanel>
+        </TimelineChart.Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './groups/GroupPanel.nova'
+        ? {
+            filename: '/demo/groups/GroupPanel.nova',
+            source: `
+              <template>
+                <template #background="{ x, y, width, height }">
+                  <Rect :x="x" :y="y" :width="width" :height="height" background="#ffffff" />
+                </template>
+
+                <TimelineChart.GroupColumn id="status">
+                  <template #cell="{ group, x, y }">
+                    <Circle :x="x + 8" :y="y + 8" :radius="4" :background="group.item.color" />
+                  </template>
+                </TimelineChart.GroupColumn>
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/groups/GroupPanel.nova'])
+    expect(result.code).toContain('compiledGroupPanelTemplate:')
+    expect(result.code).toContain('compiledGroupColumnTemplates:{')
+    expect(result.code).toContain('status:{')
+    expect(result.code).toContain('type:"TimelineChart.GroupsPanel"')
+    expect(result.code).not.toContain('type:"TimelineChart.GroupColumn"')
+    expect(result.code).not.toContain("import GroupPanel from './groups/GroupPanel.nova'")
+  })
+
+  it('compiles TimelineChart.GridTemplate to a grid schema factory', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.GridTemplate>
+            <Rect
+              :x="store.groupsWidth"
+              :y="verticalLines[0]?.y ?? 0"
+              :width="store.mainPanelWidth"
+              :height="verticalLines[0]?.height ?? height"
+              :background="api.resolveThemeToken('--grid-bg', '#f8fbff')"
+            />
+            <Rect
+              for="line in verticalLines"
+              :key="line.id"
+              :x="line.x"
+              :y="line.y"
+              :width="line.lineWidth"
+              :height="line.height"
+              :background="line.color"
+            />
+          </TimelineChart.GridTemplate>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledGridTemplate:')
+    expect(result.code).toContain('const verticalLines = ctx.verticalLines')
+    expect(result.code).toContain('const horizontalLines = ctx.horizontalLines')
+    expect(result.code).toContain('const store = ctx.store')
+    expect(result.code).toContain('__novaFor(verticalLines)')
+    expect(result.code).not.toContain('type:"TimelineChart.GridTemplate"')
   })
 
   it('compiles TimelineChart.Markers DSL to compiled marker options', () => {
@@ -530,9 +693,11 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('x:timeToPx(state.now) - 1')
   })
 
-  it('inlines external template src files inside TimelineChart.GroupPanel without component nodes', () => {
+  it('inlines external template src files inside TimelineChart.GroupsPanel without component nodes', () => {
     const result = compileTimelineGroupColumnTemplatesSource(`
-      <template src="./groups/GroupPanel.nova" />
+      <TimelineChart.GroupsPanel>
+        <template src="./groups/GroupPanel.nova" />
+      </TimelineChart.GroupsPanel>
     `, {
       filename: '/demo/App.vue',
       resolveImport: request => {
@@ -541,9 +706,7 @@ describe('Nova SFC compiler', () => {
             filename: '/demo/groups/GroupPanel.nova',
             source: `
               <template>
-                <TimelineChart.GroupPanel>
-                  <template src="./columns/StatusColumn.nova" />
-                </TimelineChart.GroupPanel>
+                <template src="./columns/StatusColumn.nova" />
               </template>
             `,
           }
@@ -595,6 +758,43 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('radius:8')
     expect(result.code).toContain('selectionHighlight:{ radius: 10 }')
+  })
+
+  it('compiles TimelineChart annotation profiles into visualProfiles on TimelineChart.Root', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root :data="data">
+          <TimelineChart.PointProfile
+            id="milestone"
+            shape="diamond"
+            :size="11"
+            :fill="point => point.custom?.color ?? '#10b981'"
+            label-position="right"
+            :label-offset="8"
+            interaction="select-point"
+          />
+          <TimelineChart.LinkProfile
+            id="trace"
+            :stroke="link => link.custom?.color ?? '#10b981'"
+            pattern="solid"
+            routing="orthogonal"
+            from-port="right.middle"
+            :elbow="{ mode: 'ratio', value: 0.62 }"
+          />
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('visualProfiles:{pointProfiles:{milestone:{recipe:{')
+    expect(result.code).toContain('shape:"diamond"')
+    expect(result.code).toContain("fill:point => point.custom?.color ?? '#10b981'")
+    expect(result.code).toContain('label:{text:point => point.label,position:"right",offset:8')
+    expect(result.code).toContain('linkProfiles:{trace:{recipe:{')
+    expect(result.code).toContain('pattern:"solid"')
+    expect(result.code).toContain('routing:{type:"orthogonal",fromPort:"right.middle",elbow:{ mode: \'ratio\', value: 0.62 }}')
+    expect(result.code).not.toContain('type:"TimelineChart.PointProfile"')
+    expect(result.code).not.toContain('type:"TimelineChart.LinkProfile"')
   })
 
   it('compiles Scenes and Scene DSL tags to core Nova scene schema types', () => {

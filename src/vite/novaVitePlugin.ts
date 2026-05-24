@@ -18,6 +18,7 @@ export interface NovaGeneratedOutputOptions {
 export interface NovaVitePluginOptions {
   includeDiagnostics?: boolean
   generatedOutput?: NovaGeneratedOutputOptions
+  sourceRoot?: string
 }
 
 interface VirtualNovaModule {
@@ -63,6 +64,7 @@ const NOVA_STYLE_LANGS = new Set(['novacss'])
 /** Vite plugin для `.nova`, `.novacss` и Vue `NovaCanvas` inline DSL. */
 export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
   const generatedOutput = resolveGeneratedOutputOptions(options.generatedOutput)
+  const sourceRoot = options.sourceRoot ? path.resolve(options.sourceRoot) : path.resolve(process.cwd(), 'src')
   const virtualModules = new Map<string, VirtualNovaModule>()
 
   return {
@@ -83,7 +85,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     load(id) {
       const virtualModule = virtualModules.get(stripViteQuery(id))
       if (!virtualModule) return null
-      return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput)
+      return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput, sourceRoot)
     },
 
     /**
@@ -117,7 +119,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
       if (cleanId.endsWith('.novacss')) {
         const result = compileNovaCss(source, {
           filename: cleanId,
-          resolveImport: (request, from) => resolveSourceImport(request, from, this),
+          resolveImport: (request, from) => resolveSourceImport(request, from, this, sourceRoot),
         })
         const code = generateNovaCssModule(result, {
           sideEffect: !hasViteQuery(id, 'asset'),
@@ -133,7 +135,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
 
       if (cleanId.endsWith('.nova')) {
         return {
-          code: compileNovaModule(source, cleanId, this, options, generatedOutput),
+          code: compileNovaModule(source, cleanId, this, options, generatedOutput, sourceRoot),
           map: null,
         }
       }
@@ -150,6 +152,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           this,
           virtualModules,
           options.includeDiagnostics ?? true,
+          sourceRoot,
           novaStyles.scopedStyles,
         )
         if (timelineProfiles) {
@@ -163,6 +166,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           this,
           virtualModules,
           options.includeDiagnostics ?? true,
+          sourceRoot,
           novaStyles.scopedStyles,
         )
         if (novaCanvas) {
@@ -176,6 +180,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
             cleanId,
             this,
             options.includeDiagnostics ?? true,
+            sourceRoot,
             novaStyles.globalStyles,
           )
           hasTransform = true
@@ -201,10 +206,11 @@ function compileNovaModule(
   context: { addWatchFile: (id: string) => void },
   options: NovaVitePluginOptions,
   generatedOutput: Required<NovaGeneratedOutputOptions>,
+  sourceRoot: string,
 ): string {
   const result = compileNovaSfc(source, {
     filename: id,
-    resolveImport: (request, from) => resolveSourceImport(request, from, context),
+    resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
   })
   emitDiagnostics(id, result.diagnostics, options.includeDiagnostics ?? true)
   throwOnErrors(result.diagnostics)
@@ -218,6 +224,7 @@ function transformVueNovaCanvasTemplates(
   context: { addWatchFile: (id: string) => void },
   virtualModules: Map<string, VirtualNovaModule>,
   includeDiagnostics: boolean,
+  sourceRoot: string,
   novaStyleBlocks: Array<string> = [],
 ): string | null {
   if (!hasVueNovaCanvasSource(source)) return null
@@ -289,7 +296,7 @@ function transformVueNovaCanvasTemplates(
       : openingSource
 
     if (mountRequest) {
-      const resolvedMount = resolveSourceImport(mountRequest, stripViteQuery(id), context)
+      const resolvedMount = resolveSourceImport(mountRequest, stripViteQuery(id), context, sourceRoot)
       if (!resolvedMount) {
         diagnostics.push({
           severity: 'error',
@@ -367,6 +374,7 @@ function transformVueTimelineChartProfiles(
   context: { addWatchFile: (id: string) => void },
   virtualModules: Map<string, VirtualNovaModule>,
   includeDiagnostics: boolean,
+  sourceRoot: string,
   novaStyleBlocks: Array<string> = [],
 ): string | null {
   if (!hasVueTimelineChartProfileSource(source)) return null
@@ -390,10 +398,10 @@ function transformVueTimelineChartProfiles(
     const children = Array.isArray(node.children) ? node.children : []
 
     const profileChildren = children.filter((child: any) => isTimelineTaskProfileVueNode(child))
-    const groupTemplateChildren = children.filter((child: any) => isTimelineGroupTemplateVueNode(child, cleanId, context))
+    const groupTemplateChildren = children.filter((child: any) => isTimelineGroupTemplateVueNode(child, cleanId, context, sourceRoot))
     const rootChildren = children.filter((child: any) => (
       !isTimelineTaskProfileVueNode(child)
-      && !isTimelineGroupTemplateVueNode(child, cleanId, context)
+      && !isTimelineGroupTemplateVueNode(child, cleanId, context, sourceRoot)
       && !isEmptyTextNode(child)
     ))
     const shouldInjectStyleSheet = novaStyleBlocks.length > 0 && !hasVueStyleSheetProp(node)
@@ -404,7 +412,7 @@ function transformVueTimelineChartProfiles(
       const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
       const result = compileTimelineTaskProfilesSource(profilesSource, {
         filename: id,
-        resolveImport: (request, from) => resolveSourceImport(request, from, context),
+        resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
       })
       for (const dependency of result.dependencies) context.addWatchFile(dependency)
       emitDiagnostics(id, result.diagnostics, includeDiagnostics)
@@ -441,7 +449,7 @@ function transformVueTimelineChartProfiles(
       const groupTemplatesSource = groupTemplateChildren.map((child: any) => child.loc.source).join('\n')
       const result = compileTimelineGroupColumnTemplatesSource(groupTemplatesSource, {
         filename: id,
-        resolveImport: (request, from) => resolveSourceImport(request, from, context),
+        resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
       })
       for (const dependency of result.dependencies) context.addWatchFile(dependency)
       emitDiagnostics(id, result.diagnostics, includeDiagnostics)
@@ -467,6 +475,7 @@ function transformVueTimelineChartProfiles(
           id,
           context,
           includeDiagnostics,
+          sourceRoot,
         )};`)
       }
       styleSheetProp = ` :style-sheet="${timelineStyleAssetName}"`
@@ -498,11 +507,12 @@ function compileVueNovaStyleBlocksAssetCode(
   id: string,
   context: { addWatchFile: (id: string) => void },
   includeDiagnostics: boolean,
+  sourceRoot: string,
 ): string {
-  const source = blocks.map(block => readVueNovaStyleBlockSource(block, id, context)).join('\n')
+  const source = blocks.map(block => readVueNovaStyleBlockSource(block, id, context, sourceRoot)).join('\n')
   const result = compileNovaCss(source, {
     filename: id,
-    resolveImport: (request, from) => resolveSourceImport(request, from, context),
+    resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
   })
   emitDiagnostics(id, result.diagnostics, includeDiagnostics)
   throwOnErrors(result.diagnostics)
@@ -514,12 +524,13 @@ function injectVueGlobalNovaStyles(
   id: string,
   context: { addWatchFile: (id: string) => void },
   includeDiagnostics: boolean,
+  sourceRoot: string,
   novaStyleBlocks: Array<string>,
 ): string {
   const assetName = `__novaGlobalStyleSheet${hashString(`${id}:${novaStyleBlocks.join('\n')}`)}`
-  const assetCode = compileVueNovaStyleBlocksAssetCode(novaStyleBlocks, id, context, includeDiagnostics)
+  const assetCode = compileVueNovaStyleBlocksAssetCode(novaStyleBlocks, id, context, includeDiagnostics, sourceRoot)
   return injectVueScriptSetupImports(source, [
-    `import { Nova as __NovaRuntime } from '@endge/nova';`,
+    'import { Nova as __NovaRuntime } from \'@endge/nova\';',
     `const ${assetName} = ${assetCode};`,
     `__NovaRuntime.import(${assetName});`,
   ].join('\n'))
@@ -529,6 +540,7 @@ function readVueNovaStyleBlockSource(
   block: string,
   id: string,
   context: { addWatchFile: (id: string) => void },
+  sourceRoot: string,
 ): string {
   const match = block.match(/^<style\b([^>]*)>([\s\S]*?)<\/style>$/i)
   if (!match) return block
@@ -537,7 +549,7 @@ function readVueNovaStyleBlockSource(
   const src = readParsedAttr(attrs, 'src')
   if (!src) return match[2] ?? ''
 
-  const imported = resolveSourceImport(src, id, context)
+  const imported = resolveSourceImport(src, id, context, sourceRoot)
   if (!imported) return ''
   return typeof imported === 'string' ? imported : imported.source
 }
@@ -639,16 +651,18 @@ function isTimelineGroupTemplateVueNode(
   node: any,
   ownerFile: string,
   context: { addWatchFile: (id: string) => void },
+  sourceRoot: string,
 ): boolean {
   if (node.type !== NodeTypes.ELEMENT) return false
-  if (node.tag === 'TimelineChart.GroupPanel' || node.tag === 'TimelineChart.GroupColumn') return true
+  if (node.tag === 'TimelineChart.GroupsPanel' || node.tag === 'TimelineChart.GroupColumn') return true
   if (node.tag !== 'template') return false
 
   const src = readVueStaticAttr(node, 'src')
   if (!src) return false
 
-  const imported = resolveSourceImport(src, ownerFile, context)
-  return !!imported?.source.includes('TimelineChart.Group')
+  const imported = resolveSourceImport(src, ownerFile, context, sourceRoot)
+  return !!imported?.source.includes('TimelineChart.GroupsPanel')
+    || !!imported?.source.includes('TimelineChart.GroupColumn')
 }
 
 function isNamedVueTemplate(node: any): boolean {
@@ -881,10 +895,11 @@ function resolveSourceImport(
   request: string,
   from: string | undefined,
   context: { addWatchFile: (id: string) => void },
+  sourceRoot: string = path.resolve(process.cwd(), 'src'),
 ): { source: string; filename: string } | null {
   const baseDir = from ? path.dirname(stripViteQuery(from)) : process.cwd()
   const resolved = request.startsWith('@/') || request === '@'
-    ? path.resolve(process.cwd(), 'src', request.slice(2))
+    ? path.resolve(sourceRoot, request.slice(2))
     : path.resolve(baseDir, request)
   if (!fs.existsSync(resolved)) return null
   context.addWatchFile(resolved)

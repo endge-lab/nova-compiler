@@ -54,7 +54,7 @@ export function compileNovaCss(source: string, options: NovaCssCompileOptions = 
 /** Создает JS module для Vite import `.novacss`. */
 export function generateNovaCssModule(result: NovaCssCompileResult, options: NovaCssGenerateModuleOptions = {}): string {
   const registration = options.sideEffect
-    ? `import { Nova } from '@endge/nova';\n`
+    ? 'import { Nova } from \'@endge/nova\';\n'
     : ''
   const sideEffect = options.sideEffect
     ? 'Nova.import(asset);\n'

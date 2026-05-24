@@ -76,6 +76,8 @@ interface TemplateParseOptions {
   resolveImport?: NovaCssCompileOptions['resolveImport']
   dependencies?: Set<string>
   includeStack?: Array<string>
+  schemaComponents?: Map<string, ScriptSetupImportBinding>
+  schemaComponentLocals?: Set<string>
 }
 
 interface ScriptSetupCompileResult {
@@ -291,10 +293,16 @@ const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
 ])
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
-const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
+const TIMELINE_PROFILE_MARKER_TAGS = new Set([
+  'TimelineTaskProfile',
+  'TimelineChart.BackgroundProfile',
+  'TimelineChart.PointProfile',
+  'TimelineChart.LinkProfile',
+])
 const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Icon', 'Text', 'TextBlock'])
-const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupPanel', 'TimelineChart.GroupColumn'])
+const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupColumn'])
 const TIMELINE_MARKER_DSL_TAGS = new Set(['TimelineChart.Markers', 'TimelineChart.Marker'])
+const TIMELINE_GRID_TEMPLATE_TAG = 'TimelineChart.GridTemplate'
 const TIMELINE_GROUP_SCHEMA_TAGS = new Set(['Rect', 'Line', 'Circle', 'Icon', 'Text', 'TextBlock', 'ProgressRing'])
 const CORE_DSL_TAGS: Record<string, string> = {
   Scenes: 'nova.scenes',
@@ -450,11 +458,14 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
 
   const templateOffset = sfc.descriptor.template?.loc.start.offset ?? 0
   const dependencies = new Set<string>()
+  const schemaComponentLocals = new Set<string>()
   const templateNodes = sfc.descriptor.template
     ? parseTemplate(sfc.descriptor.template.content, diagnostics, templateOffset, {
         filename,
         resolveImport: options.resolveImport,
         dependencies,
+        schemaComponents: setup.importBindings,
+        schemaComponentLocals,
       })
     : []
   validateTemplateNodes(templateNodes, diagnostics, {
@@ -490,6 +501,7 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
       generatedImports: context.generatedImports,
       autoAssetBundleCode: generateAutoAssetBundleCode(context.assets),
       assetBundleExpressions: context.assets.bundleExpressions,
+      schemaComponentLocals,
     }),
     diagnostics,
     scopeId,
@@ -691,6 +703,39 @@ function parseTemplate(
   return root.children.flatMap(child => convertTemplateChild(child, diagnostics, baseOffset, options)).filter(Boolean)
 }
 
+function parseTemplateFragment(
+  source: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset = 0,
+  options: TemplateParseOptions = {},
+): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
+  const root = baseParse(source)
+  const children: Array<TemplateNode> = []
+  const slots: Record<string, TemplateSlotNode> = {}
+
+  for (const child of root.children) {
+    if (child.type === NodeTypes.ELEMENT && isTemplateElement(child as ElementNode)) {
+      const template = child as ElementNode
+      if (hasTemplateInclude(template) && !isSlotTemplate(template)) {
+        const fragment = resolveTemplateIncludeFragment(template, diagnostics, baseOffset, options)
+        children.push(...fragment.children)
+        for (const [name, slot] of Object.entries(fragment.slots)) slots[name] = slot
+        continue
+      }
+
+      const slot = convertSlotTemplate(template, diagnostics, baseOffset, options)
+      if (slot) {
+        slots[slot.name] = slot
+        continue
+      }
+    }
+
+    children.push(...convertTemplateChild(child, diagnostics, baseOffset, options))
+  }
+
+  return { children, slots }
+}
+
 function convertTemplateChild(
   child: TemplateChildNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
@@ -710,6 +755,21 @@ function convertTemplateChild(
   if (child.type !== NodeTypes.ELEMENT) return []
 
   const element = child as ElementNode
+  const dynamicSchemaDirective = readDynamicNovaSchemaDirective(element)
+  if (dynamicSchemaDirective) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-dynamic',
+      message: `${dynamicSchemaDirective} должен быть статической compile-time директивой.`,
+    })
+    return []
+  }
+
+  const schemaDirective = readStaticNovaSchemaDirective(element)
+  if (schemaDirective) {
+    return resolveNovaSchemaInclude(element, schemaDirective, diagnostics, options)
+  }
+
   if (isTemplateElement(element)) {
     if (hasTemplateInclude(element)) {
       return resolveTemplateInclude(element, diagnostics, options)
@@ -763,7 +823,19 @@ function convertElementChildren(
     if (child.type === NodeTypes.ELEMENT && isTemplateElement(child as ElementNode)) {
       const template = child as ElementNode
       if (hasTemplateInclude(template) && !isSlotTemplate(template)) {
-        children.push(...resolveTemplateInclude(template, diagnostics, options))
+        const fragment = resolveTemplateIncludeFragment(template, diagnostics, baseOffset, options)
+        children.push(...fragment.children)
+        for (const [name, slot] of Object.entries(fragment.slots)) {
+          if (slots[name]) {
+            diagnostics.push({
+              severity: 'error',
+              code: 'duplicate-slot',
+              message: `Slot "${name}" уже объявлен.`,
+            })
+          } else {
+            slots[name] = slot
+          }
+        }
         continue
       }
 
@@ -777,6 +849,26 @@ function convertElementChildren(
           })
         } else {
           slots[slot.name] = slot
+        }
+        continue
+      }
+    }
+
+    if (child.type === NodeTypes.ELEMENT) {
+      const schemaDirective = readStaticNovaSchemaDirective(child as ElementNode)
+      if (schemaDirective) {
+        const fragment = resolveNovaSchemaIncludeFragment(child as ElementNode, schemaDirective, diagnostics, baseOffset, options)
+        children.push(...fragment.children)
+        for (const [name, slot] of Object.entries(fragment.slots)) {
+          if (slots[name]) {
+            diagnostics.push({
+              severity: 'error',
+              code: 'duplicate-slot',
+              message: `Slot "${name}" уже объявлен.`,
+            })
+          } else {
+            slots[name] = slot
+          }
         }
         continue
       }
@@ -849,6 +941,171 @@ function isSlotTemplate(element: ElementNode): boolean {
   return element.props.some(prop => prop.type === NodeTypes.DIRECTIVE && prop.name === 'slot')
 }
 
+const NOVA_SCHEMA_DIRECTIVES = new Set(['nova:schema', 'nova:inline'])
+
+function isNovaSchemaDirectiveName(name: string): boolean {
+  return NOVA_SCHEMA_DIRECTIVES.has(name)
+}
+
+function readStaticNovaSchemaDirective(element: ElementNode): string | null {
+  const prop = element.props.find(prop => (
+    prop.type === NodeTypes.ATTRIBUTE
+    && isNovaSchemaDirectiveName(prop.name)
+  ))
+  return prop?.type === NodeTypes.ATTRIBUTE ? prop.name : null
+}
+
+function readDynamicNovaSchemaDirective(element: ElementNode): string | null {
+  const prop = element.props.find(prop => (
+    prop.type === NodeTypes.DIRECTIVE
+    && prop.name === 'bind'
+    && prop.arg?.type === NodeTypes.SIMPLE_EXPRESSION
+    && isNovaSchemaDirectiveName(prop.arg.content)
+  ))
+  return prop?.type === NodeTypes.DIRECTIVE && prop.arg?.type === NodeTypes.SIMPLE_EXPRESSION
+    ? prop.arg.content
+    : null
+}
+
+function isStaticNovaSchemaDirectiveProp(prop: AttributeNode | DirectiveNode): boolean {
+  return prop.type === NodeTypes.ATTRIBUTE && isNovaSchemaDirectiveName(prop.name)
+}
+
+function resolveNovaSchemaInclude(
+  element: ElementNode,
+  directiveName: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: TemplateParseOptions,
+): Array<TemplateNode> {
+  const usage = `<${element.tag} ${directiveName}>`
+  const binding = options.schemaComponents?.get(element.tag)
+  if (!binding) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-import-missing',
+      message: `${usage} требует import из .nova файла.`,
+    })
+    return []
+  }
+
+  if (binding.imported !== 'default') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-default-import',
+      message: `${usage} поддерживает только default import .nova файла.`,
+    })
+    return []
+  }
+
+  if (assetExtension(binding.source) !== '.nova') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-source',
+      message: `${usage} должен ссылаться на .nova файл.`,
+    })
+    return []
+  }
+
+  if (hasNonEmptyTemplateChildren(element)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-children',
+      message: `${usage} не может содержать children.`,
+    })
+  }
+
+  const extraAttrs = element.props.filter(prop => !isStaticNovaSchemaDirectiveProp(prop))
+  if (extraAttrs.length > 0) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-attrs',
+      message: `${usage} пока не поддерживает props, events и slots.`,
+    })
+  }
+
+  options.schemaComponentLocals?.add(binding.local)
+
+  return resolveTemplateIncludeRequest(binding.source, element.tag, diagnostics, options, {
+    missingResolverCode: 'nova-schema-resolver-missing',
+    missingResolverMessage: '<*.nova nova:schema> требует resolveImport в настройках компилятора.',
+    notFoundCode: 'nova-schema-not-found',
+    notFoundMessage: request => `Не удалось найти nova:schema include "${request}".`,
+    cycleCode: 'nova-schema-cycle',
+    cycleMessage: request => `Обнаружен циклический nova:schema include "${request}".`,
+    parseErrorCode: 'nova-schema-parse-error',
+    missingTemplateCode: 'nova-schema-missing-template',
+    missingTemplateMessage: request => `Nova schema include "${request}" должен содержать <template>.`,
+  })
+}
+
+function resolveNovaSchemaIncludeFragment(
+  element: ElementNode,
+  directiveName: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
+  options: TemplateParseOptions,
+): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
+  const usage = `<${element.tag} ${directiveName}>`
+  const binding = options.schemaComponents?.get(element.tag)
+  if (!binding) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-import-missing',
+      message: `${usage} требует import из .nova файла.`,
+    })
+    return { children: [], slots: {} }
+  }
+
+  if (binding.imported !== 'default') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-default-import',
+      message: `${usage} поддерживает только default import .nova файла.`,
+    })
+    return { children: [], slots: {} }
+  }
+
+  if (assetExtension(binding.source) !== '.nova') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-source',
+      message: `${usage} должен ссылаться на .nova файл.`,
+    })
+    return { children: [], slots: {} }
+  }
+
+  if (hasNonEmptyTemplateChildren(element)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-children',
+      message: `${usage} не может содержать children.`,
+    })
+  }
+
+  const extraAttrs = element.props.filter(prop => !isStaticNovaSchemaDirectiveProp(prop))
+  if (extraAttrs.length > 0) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'nova-schema-attrs',
+      message: `${usage} пока не поддерживает props, events и slots.`,
+    })
+  }
+
+  options.schemaComponentLocals?.add(binding.local)
+
+  return resolveTemplateIncludeRequestFragment(binding.source, element.tag, diagnostics, baseOffset, options, {
+    missingResolverCode: 'nova-schema-resolver-missing',
+    missingResolverMessage: '<*.nova nova:schema> требует resolveImport в настройках компилятора.',
+    notFoundCode: 'nova-schema-not-found',
+    notFoundMessage: request => `Не удалось найти nova:schema include "${request}".`,
+    cycleCode: 'nova-schema-cycle',
+    cycleMessage: request => `Обнаружен циклический nova:schema include "${request}".`,
+    parseErrorCode: 'nova-schema-parse-error',
+    missingTemplateCode: 'nova-schema-missing-template',
+    missingTemplateMessage: request => `Nova schema include "${request}" должен содержать <template>.`,
+  })
+}
+
 function resolveTemplateInclude(
   element: ElementNode,
   diagnostics: Array<NovaUiStyleDiagnostic>,
@@ -881,12 +1138,88 @@ function resolveTemplateInclude(
     })
   }
 
+  return resolveTemplateIncludeRequest(request, request, diagnostics, options, {
+    missingResolverCode: 'template-src-resolver-missing',
+    missingResolverMessage: '<template src> требует resolveImport в настройках компилятора.',
+    notFoundCode: 'template-src-not-found',
+    notFoundMessage: request => `Не удалось найти template include "${request}".`,
+    cycleCode: 'template-src-cycle',
+    cycleMessage: request => `Обнаружен циклический template include "${request}".`,
+    parseErrorCode: 'template-src-parse-error',
+    missingTemplateCode: 'template-src-missing-template',
+    missingTemplateMessage: request => `Template include "${request}" должен содержать <template>.`,
+  })
+}
+
+function resolveTemplateIncludeFragment(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
+  options: TemplateParseOptions,
+): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
+  if (readElementDynamicAttr(element, 'src')) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'dynamic-template-src',
+      message: '<template src> поддерживает только статический src. Динамический :src не поддерживается.',
+    })
+    return { children: [], slots: {} }
+  }
+
+  const request = readElementStaticAttr(element, 'src')
+  if (!request) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-required',
+      message: '<template src> требует путь к .nova файлу.',
+    })
+    return { children: [], slots: {} }
+  }
+
+  if (hasNonEmptyTemplateChildren(element)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'template-src-inline-children',
+      message: '<template src> не может одновременно содержать inline children.',
+    })
+  }
+
+  return resolveTemplateIncludeRequestFragment(request, request, diagnostics, baseOffset, options, {
+    missingResolverCode: 'template-src-resolver-missing',
+    missingResolverMessage: '<template src> требует resolveImport в настройках компилятора.',
+    notFoundCode: 'template-src-not-found',
+    notFoundMessage: request => `Не удалось найти template include "${request}".`,
+    cycleCode: 'template-src-cycle',
+    cycleMessage: request => `Обнаружен циклический template include "${request}".`,
+    parseErrorCode: 'template-src-parse-error',
+    missingTemplateCode: 'template-src-missing-template',
+    missingTemplateMessage: request => `Template include "${request}" должен содержать <template>.`,
+  })
+}
+
+function resolveTemplateIncludeRequest(
+  request: string,
+  displayName: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: TemplateParseOptions,
+  messages: {
+    missingResolverCode: string
+    missingResolverMessage: string
+    notFoundCode: string
+    notFoundMessage: (request: string) => string
+    cycleCode: string
+    cycleMessage: (request: string) => string
+    parseErrorCode: string
+    missingTemplateCode: string
+    missingTemplateMessage: (request: string) => string
+  },
+): Array<TemplateNode> {
   const resolver = options.resolveImport
   if (!resolver) {
     diagnostics.push({
       severity: 'error',
-      code: 'template-src-resolver-missing',
-      message: '<template src> требует resolveImport в настройках компилятора.',
+      code: messages.missingResolverCode,
+      message: messages.missingResolverMessage,
     })
     return []
   }
@@ -895,8 +1228,8 @@ function resolveTemplateInclude(
   if (!resolved) {
     diagnostics.push({
       severity: 'error',
-      code: 'template-src-not-found',
-      message: `Не удалось найти template include "${request}".`,
+      code: messages.notFoundCode,
+      message: messages.notFoundMessage(request),
     })
     return []
   }
@@ -907,8 +1240,8 @@ function resolveTemplateInclude(
   if (options.includeStack?.includes(includeKey)) {
     diagnostics.push({
       severity: 'error',
-      code: 'template-src-cycle',
-      message: `Обнаружен циклический template include "${request}".`,
+      code: messages.cycleCode,
+      message: messages.cycleMessage(displayName),
     })
     return []
   }
@@ -919,7 +1252,7 @@ function resolveTemplateInclude(
   for (const error of sfc.errors) {
     diagnostics.push({
       severity: 'error',
-      code: 'template-src-parse-error',
+      code: messages.parseErrorCode,
       message: error instanceof Error ? error.message : String(error),
     })
   }
@@ -927,13 +1260,90 @@ function resolveTemplateInclude(
   if (!sfc.descriptor.template) {
     diagnostics.push({
       severity: 'error',
-      code: 'template-src-missing-template',
-      message: `Template include "${request}" должен содержать <template>.`,
+      code: messages.missingTemplateCode,
+      message: messages.missingTemplateMessage(request),
     })
     return []
   }
 
   return parseTemplate(sfc.descriptor.template.content, diagnostics, 0, {
+    ...options,
+    filename,
+    includeStack: [...(options.includeStack ?? []), includeKey],
+  })
+}
+
+function resolveTemplateIncludeRequestFragment(
+  request: string,
+  displayName: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
+  options: TemplateParseOptions,
+  messages: {
+    missingResolverCode: string
+    missingResolverMessage: string
+    notFoundCode: string
+    notFoundMessage: (request: string) => string
+    cycleCode: string
+    cycleMessage: (request: string) => string
+    parseErrorCode: string
+    missingTemplateCode: string
+    missingTemplateMessage: (request: string) => string
+  },
+): { children: Array<TemplateNode>; slots: Record<string, TemplateSlotNode> } {
+  const resolver = options.resolveImport
+  if (!resolver) {
+    diagnostics.push({
+      severity: 'error',
+      code: messages.missingResolverCode,
+      message: messages.missingResolverMessage,
+    })
+    return { children: [], slots: {} }
+  }
+
+  const resolved = resolver(request, options.filename)
+  if (!resolved) {
+    diagnostics.push({
+      severity: 'error',
+      code: messages.notFoundCode,
+      message: messages.notFoundMessage(request),
+    })
+    return { children: [], slots: {} }
+  }
+
+  const source = typeof resolved === 'string' ? resolved : resolved.source
+  const filename = typeof resolved === 'string' ? request : resolved.filename ?? request
+  const includeKey = filename
+  if (options.includeStack?.includes(includeKey)) {
+    diagnostics.push({
+      severity: 'error',
+      code: messages.cycleCode,
+      message: messages.cycleMessage(displayName),
+    })
+    return { children: [], slots: {} }
+  }
+
+  options.dependencies?.add(filename)
+
+  const sfc = parseSfc(source, { filename })
+  for (const error of sfc.errors) {
+    diagnostics.push({
+      severity: 'error',
+      code: messages.parseErrorCode,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  if (!sfc.descriptor.template) {
+    diagnostics.push({
+      severity: 'error',
+      code: messages.missingTemplateCode,
+      message: messages.missingTemplateMessage(request),
+    })
+    return { children: [], slots: {} }
+  }
+
+  return parseTemplateFragment(sfc.descriptor.template.content, diagnostics, baseOffset, {
     ...options,
     filename,
     includeStack: [...(options.includeStack ?? []), includeKey],
@@ -1676,6 +2086,7 @@ function validateTemplateNodeList(
       && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
       && !TIMELINE_GROUP_MARKER_TAGS.has(node.tag)
       && !TIMELINE_MARKER_DSL_TAGS.has(node.tag)
+      && node.tag !== TIMELINE_GRID_TEMPLATE_TAG
       && !isAssetDeclarationTag(node.tag)
       && !isAssetsContainerTag(node.tag)
       && !node.tag.includes('.')
@@ -1732,7 +2143,17 @@ function validateTemplateNodeList(
     }
 
     if (node.tag === 'TimelineChart.GroupPanel') {
-      validateTimelineGroupPanelNodes([node], diagnostics)
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-group-panel-removed',
+        message: 'TimelineChart.GroupPanel удален. Описывайте #background, #overlay и TimelineChart.GroupColumn внутри TimelineChart.GroupsPanel.',
+      })
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
+    if (node.tag === 'TimelineChart.GroupsPanel') {
+      validateTimelineGroupsPanelNodes([node], diagnostics)
       previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
       continue
     }
@@ -1745,6 +2166,12 @@ function validateTemplateNodeList(
 
     if (node.tag === 'TimelineChart.Markers') {
       validateTimelineMarkerNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
+    if (node.tag === TIMELINE_GRID_TEMPLATE_TAG) {
+      validateTimelineGridTemplateNodes([node], diagnostics)
       previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
       continue
     }
@@ -1838,10 +2265,15 @@ function generateSchema(
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => child.tag !== 'TimelineTaskProfile' && !isTimelineGroupTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
-    : node.children
+    ? node.children.filter(child => !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
+    : isTimelineGroupsPanelTag(node)
+      ? node.children.filter(child => !isTimelineGroupsPanelTemplateChild(child))
+      : node.children
   const timelineTaskProfiles = isTimelineRootTag(node)
     ? generateTimelineTaskProfilesProp(node.children, context)
+    : ''
+  const timelineVisualProfiles = isTimelineRootTag(node)
+    ? generateTimelineVisualProfilesProp(node.children)
     : ''
   const timelineGroupColumnTemplates = isTimelineRootTag(node)
     ? generateTimelineGroupColumnTemplatesProp(node.children, context)
@@ -1855,12 +2287,17 @@ function generateSchema(
   const timelineMarkers = isTimelineRootTag(node)
     ? generateTimelineMarkersProp(node.children, context)
     : ''
+  const timelineGridTemplate = isTimelineRootTag(node)
+    ? generateTimelineGridTemplateProp(node.children, context)
+    : ''
   const props = [
     timelineTaskProfiles,
+    timelineVisualProfiles,
     timelineGroupColumnTemplates,
     timelineGroupPanelTemplate,
     timelineGroupPanelOverlayTemplate,
     timelineMarkers,
+    timelineGridTemplate,
   ].reduce(
     (base, extra) => mergePropsCode(base, extra),
     generateProps(node, context, isCompiledComponent, isTopLevelRoot),
@@ -1902,7 +2339,9 @@ function generateSlots(
   context: GenerateContext,
   isCompiledComponent: boolean,
 ): string {
-  const entries: Array<[string, TemplateSlotNode]> = Object.entries(node.slots)
+  const entries: Array<[string, TemplateSlotNode]> = Object
+    .entries(node.slots)
+    .filter(([name]) => !isTimelineGroupsPanelTag(node) || (name !== 'background' && name !== 'overlay'))
   if (isCompiledComponent && node.children.length > 0 && !node.slots.default) {
     entries.push(['default', {
       name: 'default',
@@ -1990,6 +2429,21 @@ function generateTimelineTaskProfilesProp(nodes: Array<TemplateNode>, context: G
   return `taskProfiles:${generateTimelineTaskProfiles(profileNodes, context)}`
 }
 
+function generateTimelineVisualProfilesProp(nodes: Array<TemplateNode>): string {
+  const pointProfiles = nodes.filter(node => node.tag === 'TimelineChart.PointProfile')
+  const linkProfiles = nodes.filter(node => node.tag === 'TimelineChart.LinkProfile')
+  const backgroundProfiles = nodes.filter(node => node.tag === 'TimelineChart.BackgroundProfile')
+  if (pointProfiles.length === 0 && linkProfiles.length === 0 && backgroundProfiles.length === 0) return ''
+
+  const sections = [
+    pointProfiles.length > 0 ? `pointProfiles:{${pointProfiles.map(generateTimelinePointProfileEntry).join(',')}}` : '',
+    linkProfiles.length > 0 ? `linkProfiles:{${linkProfiles.map(generateTimelineLinkProfileEntry).join(',')}}` : '',
+    backgroundProfiles.length > 0 ? `backgroundProfiles:{${backgroundProfiles.map(generateTimelineBackgroundProfileEntry).join(',')}}` : '',
+  ].filter(Boolean)
+
+  return `visualProfiles:{${sections.join(',')}}`
+}
+
 function generateTimelineGroupColumnTemplatesProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
   const columns = collectTimelineGroupColumnNodes(nodes)
   if (columns.length === 0) return ''
@@ -2014,18 +2468,43 @@ function generateTimelineMarkersProp(nodes: Array<TemplateNode>, context: Genera
   return `compiledMarkers:${generateTimelineMarkersConfig(markerRoots, context)}`
 }
 
+function generateTimelineGridTemplateProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const gridTemplate = collectTimelineGridTemplateNodes(nodes)[0]
+  if (!gridTemplate) return ''
+  return `compiledGridTemplate:${generateTimelineGridTemplate(gridTemplate.children, context)}`
+}
+
 function mergePropsCode(base: string, extra: string): string {
   if (!extra) return base
   if (!base) return `{${extra}}`
   return `${base.slice(0, -1)},${extra}}`
 }
 
-function isTimelineGroupTemplateNode(node: TemplateNode): boolean {
-  return node.tag === 'TimelineChart.GroupPanel' || node.tag === 'TimelineChart.GroupColumn'
+function isTimelineProfileNode(node: TemplateNode): boolean {
+  return node.tag === 'TimelineTaskProfile'
+    || node.tag === 'TimelineChart.BackgroundProfile'
+    || node.tag === 'TimelineChart.PointProfile'
+    || node.tag === 'TimelineChart.LinkProfile'
+}
+
+function isTimelineGroupsPanelTag(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.GroupsPanel'
+}
+
+function isTimelineRootTemplateNode(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.GroupColumn'
+}
+
+function isTimelineGroupsPanelTemplateChild(node: TemplateNode): boolean {
+  return node.tag === 'TimelineChart.GroupColumn' || node.tag === 'template'
 }
 
 function isTimelineMarkerTemplateNode(node: TemplateNode): boolean {
   return node.tag === 'TimelineChart.Markers' || node.tag === 'TimelineChart.Marker'
+}
+
+function isTimelineGridTemplateNode(node: TemplateNode): boolean {
+  return node.tag === TIMELINE_GRID_TEMPLATE_TAG
 }
 
 function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
@@ -2046,7 +2525,7 @@ function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<Temp
 function collectTimelineGroupPanelNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
   const result: Array<TemplateNode> = []
   for (const node of nodes) {
-    if (node.tag === 'TimelineChart.GroupPanel') {
+    if (node.tag === 'TimelineChart.GroupsPanel') {
       result.push(node)
       continue
     }
@@ -2071,6 +2550,46 @@ function collectTimelineMarkersNodes(nodes: Array<TemplateNode>): Array<Template
     }
   }
   return result
+}
+
+function collectTimelineGridTemplateNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
+  const result: Array<TemplateNode> = []
+  for (const node of nodes) {
+    if (node.tag === TIMELINE_GRID_TEMPLATE_TAG) {
+      result.push(node)
+      continue
+    }
+    result.push(...collectTimelineGridTemplateNodes(node.children))
+    for (const slot of Object.values(node.slots)) {
+      result.push(...collectTimelineGridTemplateNodes(slot.children))
+    }
+  }
+  return result
+}
+
+function validateTimelineGridTemplateNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (node.children.length === 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-grid-template-empty',
+        message: 'TimelineChart.GridTemplate требует schema children.',
+      })
+    }
+
+    for (const slotName of Object.keys(node.slots)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-grid-template-slot',
+        message: `TimelineChart.GridTemplate пока не поддерживает slot "${slotName}".`,
+      })
+    }
+
+    validateTimelineGroupColumnSchemaChildren(node.children, diagnostics)
+  }
 }
 
 function validateTimelineMarkerNodes(
@@ -2129,7 +2648,7 @@ function validateTimelineMarkerNodes(
   }
 }
 
-function validateTimelineGroupPanelNodes(
+function validateTimelineGroupsPanelNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
 ): void {
@@ -2139,8 +2658,8 @@ function validateTimelineGroupPanelNodes(
       if (slotName !== 'background' && slotName !== 'overlay') {
         diagnostics.push({
           severity: 'error',
-          code: 'timeline-group-panel-slot',
-          message: 'TimelineChart.GroupPanel поддерживает только #background, #overlay и вложенные TimelineChart.GroupColumn.',
+          code: 'timeline-groups-panel-slot',
+          message: 'TimelineChart.GroupsPanel поддерживает только #background, #overlay и вложенные TimelineChart.GroupColumn.',
         })
       }
     }
@@ -2149,8 +2668,8 @@ function validateTimelineGroupPanelNodes(
       if (child.tag !== 'TimelineChart.GroupColumn' && child.tag !== 'template') {
         diagnostics.push({
           severity: 'error',
-          code: 'timeline-group-panel-child',
-          message: 'TimelineChart.GroupPanel поддерживает только #background, #overlay, <template src> и TimelineChart.GroupColumn.',
+          code: 'timeline-groups-panel-child',
+          message: 'TimelineChart.GroupsPanel поддерживает только #background, #overlay, <template src> и TimelineChart.GroupColumn.',
         })
       }
     }
@@ -2263,6 +2782,22 @@ function generateTimelineGroupPanelTemplate(nodes: Array<TemplateNode>, context:
     const visibleGroups = ctx.visibleGroups;
     const api = ctx.api;
     const chart = ctx.chart;
+    return ${generateTimelineGroupColumnSchemaSequence(nodes, context)};
+  }`
+}
+
+function generateTimelineGridTemplate(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  return `(__timelineGrid) => {
+    const ctx = __timelineGrid;
+    const x = ctx.x;
+    const y = ctx.y;
+    const width = ctx.width;
+    const height = ctx.height;
+    const verticalLines = ctx.verticalLines;
+    const horizontalLines = ctx.horizontalLines;
+    const api = ctx.api;
+    const chart = ctx.chart;
+    const store = ctx.store;
     return ${generateTimelineGroupColumnSchemaSequence(nodes, context)};
   }`
 }
@@ -2632,6 +3167,147 @@ function groupAttr(node: TemplateNode, name: string, fallback?: string): string 
     return 'true'
   }
   return fallback ?? ''
+}
+
+function generateTimelinePointProfileEntry(node: TemplateNode): string {
+  const id = readAttr(node, 'id') ?? 'default'
+  const recipeEntries = [
+    timelineRecipeEntry(node, 'shape', ['shape']),
+    timelineRecipeEntry(node, 'size', ['size']),
+    timelineRecipeEntry(node, 'fill', ['fill']),
+    timelineRecipeEntry(node, 'stroke', ['stroke']),
+    timelineRecipeEntry(node, 'strokeWidth', ['stroke-width', 'strokeWidth']),
+    timelineRecipeEntry(node, 'icon', ['icon']),
+    timelineRecipeEntry(node, 'interaction', ['interaction']),
+    timelineHitAreaEntry(node),
+    timelinePointLabelEntry(node),
+  ].filter(Boolean)
+
+  return `${quoteKey(id)}:{recipe:{${recipeEntries.join(',')}}}`
+}
+
+function generateTimelineLinkProfileEntry(node: TemplateNode): string {
+  const id = readAttr(node, 'id') ?? 'default'
+  const recipeEntries = [
+    timelineRecipeEntry(node, 'stroke', ['stroke']),
+    timelineRecipeEntry(node, 'width', ['width']),
+    timelineRecipeEntry(node, 'pattern', ['pattern']),
+    timelineRecipeEntry(node, 'dash', ['dash']),
+    timelineRecipeEntry(node, 'dotSpacing', ['dot-spacing', 'dotSpacing']),
+    timelineRecipeEntry(node, 'cap', ['cap']),
+    timelineRecipeEntry(node, 'markerStart', ['marker-start', 'markerStart']),
+    timelineRecipeEntry(node, 'markerEnd', ['marker-end', 'markerEnd']),
+    timelineRecipeEntry(node, 'interaction', ['interaction']),
+    timelineLinkRoutingEntry(node),
+    timelineLinkLabelEntry(node),
+  ].filter(Boolean)
+
+  return `${quoteKey(id)}:{recipe:{${recipeEntries.join(',')}}}`
+}
+
+function generateTimelineBackgroundProfileEntry(node: TemplateNode): string {
+  const id = readAttr(node, 'id') ?? 'default'
+  const fill = timelineRecipeValue(node, ['fill', 'background'])
+  const radius = timelineRecipeValue(node, ['radius'])
+  const borderColor = timelineRecipeValue(node, ['stroke', 'border-color', 'borderColor'])
+  const borderWidth = timelineRecipeValue(node, ['stroke-width', 'strokeWidth', 'border-width', 'borderWidth'])
+  const borderDash = timelineRecipeValue(node, ['dash', 'border-dash', 'borderDash'])
+  const recipeEntries = [
+    fill ? `body:{rect:{background:${fill}${radius ? `,radius:${radius}` : ''}}}` : '',
+    borderColor || borderWidth || borderDash
+      ? `border:{rect:{border:{${[
+          borderColor ? `color:${borderColor}` : '',
+          borderWidth ? `width:${borderWidth}` : '',
+          borderDash ? `dash:${borderDash}` : '',
+        ].filter(Boolean).join(',')}}}}`
+      : '',
+  ].filter(Boolean)
+
+  return `${quoteKey(id)}:{recipe:{${recipeEntries.join(',')}}}`
+}
+
+function timelinePointLabelEntry(node: TemplateNode): string {
+  const text = timelineRecipeValue(node, ['label-text', 'labelText']) ?? 'point => point.label'
+  const entries = [
+    `text:${text}`,
+    timelineRecipeEntry(node, 'position', ['label-position', 'labelPosition']),
+    timelineRecipeEntry(node, 'offset', ['label-offset', 'labelOffset']),
+    timelineRecipeEntry(node, 'color', ['label-color', 'labelColor']),
+    timelineRecipeEntry(node, 'width', ['label-width', 'labelWidth']),
+    timelineRecipeEntry(node, 'height', ['label-height', 'labelHeight']),
+    timelineRecipeEntry(node, 'interaction', ['label-interaction', 'labelInteraction']),
+  ].filter(Boolean)
+
+  return entries.length > 1 ? `label:{${entries.join(',')}}` : ''
+}
+
+function timelineLinkLabelEntry(node: TemplateNode): string {
+  const text = timelineRecipeValue(node, ['label-text', 'labelText'])
+  if (!text) return ''
+  const entries = [
+    `text:${text}`,
+    timelineRecipeEntry(node, 'position', ['label-position', 'labelPosition']),
+    timelineRecipeEntry(node, 'offset', ['label-offset', 'labelOffset']),
+    timelineRecipeEntry(node, 'color', ['label-color', 'labelColor']),
+    timelineRecipeEntry(node, 'width', ['label-width', 'labelWidth']),
+    timelineRecipeEntry(node, 'height', ['label-height', 'labelHeight']),
+    timelineRecipeEntry(node, 'interaction', ['label-interaction', 'labelInteraction']),
+  ].filter(Boolean)
+
+  return `label:{${entries.join(',')}}`
+}
+
+function timelineHitAreaEntry(node: TemplateNode): string {
+  const padding = timelineRecipeValue(node, ['hit-padding', 'hitPadding'])
+  return padding ? `hitArea:{padding:${padding}}` : ''
+}
+
+function timelineLinkRoutingEntry(node: TemplateNode): string {
+  const dynamicRouting = readAnyDynamicTimelineAttr(node, ['routing'])
+  if (dynamicRouting) return `routing:${dynamicRouting}`
+
+  const routingType = readAnyStaticTimelineAttr(node, ['routing', 'routing-type', 'routingType', 'type'])
+  const entries = [
+    routingType ? `type:${serializeStaticAttr(routingType)}` : '',
+    timelineRecipeEntry(node, 'fromPort', ['from-port', 'fromPort']),
+    timelineRecipeEntry(node, 'toPort', ['to-port', 'toPort']),
+    timelineRecipeEntry(node, 'elbow', ['elbow']),
+    timelineRecipeEntry(node, 'curvature', ['curvature']),
+    timelineRecipeEntry(node, 'controlOffset', ['control-offset', 'controlOffset']),
+    timelineRecipeEntry(node, 'cornerRadius', ['corner-radius', 'cornerRadius']),
+    timelineRecipeEntry(node, 'avoid', ['avoid']),
+    timelineRecipeEntry(node, 'bundle', ['bundle']),
+  ].filter(Boolean)
+
+  return entries.length > 0 ? `routing:{${entries.join(',')}}` : ''
+}
+
+function timelineRecipeEntry(node: TemplateNode, key: string, names: Array<string>): string {
+  const value = timelineRecipeValue(node, names)
+  return value ? `${key}:${value}` : ''
+}
+
+function timelineRecipeValue(node: TemplateNode, names: Array<string>): string | null {
+  const dynamicValue = readAnyDynamicTimelineAttr(node, names)
+  if (dynamicValue) return dynamicValue
+  const staticValue = readAnyStaticTimelineAttr(node, names)
+  return staticValue ? serializeStaticAttr(staticValue) : null
+}
+
+function readAnyDynamicTimelineAttr(node: TemplateNode, names: Array<string>): string | undefined {
+  for (const name of names) {
+    const value = readAttr(node, `:${name}`)
+    if (value) return value
+  }
+  return undefined
+}
+
+function readAnyStaticTimelineAttr(node: TemplateNode, names: Array<string>): string | undefined {
+  for (const name of names) {
+    const value = readAttr(node, name)
+    if (value) return value
+  }
+  return undefined
 }
 
 function validateTimelineTaskProfileNodes(
@@ -3219,6 +3895,22 @@ function quoteKey(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function filterRuntimeImports(imports: Array<string>, schemaComponentLocals?: Set<string>): Array<string> {
+  if (!schemaComponentLocals?.size) return imports
+  return imports.filter(source => {
+    const trimmed = source.trim()
+    for (const local of schemaComponentLocals) {
+      const pattern = new RegExp(`^import\\s+${escapeRegExp(local)}\\s+from\\s+['"]`)
+      if (pattern.test(trimmed)) return false
+    }
+    return true
+  })
+}
+
 function generateModule(options: {
   className: string
   setup: ScriptSetupCompileResult
@@ -3231,7 +3923,9 @@ function generateModule(options: {
   generatedImports: Array<string>
   autoAssetBundleCode: string
   assetBundleExpressions: Array<string>
+  schemaComponentLocals?: Set<string>
 }): string {
+  const setupImports = filterRuntimeImports(options.setup.imports, options.schemaComponentLocals)
   const setupNames = new Set(options.setup.names)
   const topLevelNames = options.setup.topLevelNames
   const implicitTemplateLocals = [
@@ -3289,7 +3983,7 @@ ${indent(templateLocalDeclarations, 4)}
 
   return `import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime } from '@endge/nova';
 import { EMPTY_STYLE_CONTEXT, NOVA_UI_STYLE_TARGET, NovaUiStyleMask, NovaUIKit as __NovaUIKit, findNovaUiRoot, isNovaUiStyleTarget, mergeStyleReceiveResult, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
-${options.setup.imports.join('\n')}
+${setupImports.join('\n')}
 ${options.generatedImports.join('\n')}
 
 const __novaSfcStyle = ${options.scopedStyleAssetCode};
