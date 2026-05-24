@@ -1265,7 +1265,9 @@ function validateTimelineGroupColumnSchemaChildren(
 function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, context: GenerateContext): string {
   const entries = nodes.map(node => {
     const id = readAttr(node, 'id') ?? ''
-    const cell = node.slots.cell
+    const cellSlot = node.slots.cell
+    const headerSlot = node.slots.header
+    const cell = cellSlot
       ? `cell:(__timelineGroupColumn) => {
           const ctx = __timelineGroupColumn;
           const group = ctx.group;
@@ -1279,10 +1281,10 @@ function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, contex
           const treeIndent = ctx.treeIndent;
           const api = ctx.api;
           const chart = ctx.chart;
-          return ${generateTimelineGroupColumnSchemaSequence(cell.children, context)};
+          return ${generateTimelineGroupColumnSchemaSequence(cellSlot.children, context)};
         }`
       : ''
-    const header = node.slots.header
+    const header = headerSlot
       ? `header:(__timelineGroupColumnHeader) => {
           const ctx = __timelineGroupColumnHeader;
           const column = ctx.column;
@@ -1292,7 +1294,7 @@ function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, contex
           const height = ctx.height;
           const api = ctx.api;
           const chart = ctx.chart;
-          return ${generateTimelineGroupColumnSchemaSequence(header.children, context)};
+          return ${generateTimelineGroupColumnSchemaSequence(headerSlot.children, context)};
         }`
       : ''
     return `${quoteKey(id)}:{${[cell, header].filter(Boolean).join(',')}}`
