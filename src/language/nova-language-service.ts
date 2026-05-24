@@ -20,6 +20,36 @@ export interface NovaLanguageDiagnostic {
 export interface NovaCompletionItem {
   label: string
   kind: 'component' | 'property' | 'style'
+  detail?: string
+  documentation?: string
+  required?: boolean
+}
+
+export interface NovaComponentManifest {
+  packageName: string
+  version: string
+  groups: Array<{
+    id: string
+    title: string
+    components: Array<NovaComponentDoc>
+  }>
+}
+
+export interface NovaComponentDoc {
+  name: string
+  title?: string
+  description?: { ru?: string; en?: string }
+  props?: Array<{
+    name: string
+    type: string
+    required?: boolean
+    description?: { ru?: string; en?: string }
+  }>
+}
+
+export interface NovaLanguageServiceOptions {
+  manifests?: Array<NovaComponentManifest>
+  tagName?: string
 }
 
 export interface NovaLanguagePosition {
@@ -126,15 +156,58 @@ export function getNovaLanguageDiagnostics(
 }
 
 /** Возвращает базовые completions для JetBrains/LSP слоя. */
-export function getNovaLanguageCompletions(filename: string): Array<NovaCompletionItem> {
+export function getNovaLanguageCompletions(
+  filename: string,
+  options: NovaLanguageServiceOptions = {},
+): Array<NovaCompletionItem> {
   if (filename.endsWith('.novacss')) {
     return STYLE_COMPLETIONS.map(label => ({ label, kind: 'style' }))
   }
 
+  const manifestComponents = collectManifestComponents(options.manifests)
+  const manifestProps = options.tagName
+    ? collectManifestProps(manifestComponents.get(options.tagName))
+    : []
+
   return [
     ...COMPONENT_COMPLETIONS.map(label => ({ label, kind: 'component' as const })),
+    ...[...manifestComponents.values()].map(component => ({
+      label: component.name,
+      kind: 'component' as const,
+      detail: component.title,
+      documentation: component.description?.ru,
+    })),
+    ...manifestProps,
     ...STYLE_COMPLETIONS.map(label => ({ label, kind: 'property' as const })),
   ]
+}
+
+function collectManifestComponents(
+  manifests: Array<NovaComponentManifest> | undefined,
+): Map<string, NovaComponentDoc> {
+  const components = new Map<string, NovaComponentDoc>()
+
+  for (const manifest of manifests ?? []) {
+    for (const group of manifest.groups ?? []) {
+      for (const component of group.components ?? []) {
+        components.set(component.name, component)
+      }
+    }
+  }
+
+  return components
+}
+
+function collectManifestProps(component: NovaComponentDoc | undefined): Array<NovaCompletionItem> {
+  if (!component) return []
+
+  return (component.props ?? []).map(prop => ({
+    label: prop.name,
+    kind: 'property' as const,
+    detail: prop.type,
+    documentation: prop.description?.ru,
+    required: prop.required,
+  }))
 }
 
 function collectVueNovaCssDiagnostics(

@@ -383,6 +383,7 @@ function transformVueTimelineChartProfiles(
 
   const ast = baseParse(template.content)
   const templateOffset = template.loc.start.offset
+  const cleanId = stripViteQuery(id)
 
   walkVueTemplateElements(ast, node => {
     if (node.tag !== 'TimelineChart') return

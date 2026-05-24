@@ -133,4 +133,42 @@ describe('Nova language service', () => {
       'lg:',
     ]))
   })
+
+  it('adds component and prop completions from Nova component manifests', () => {
+    const completions = getNovaLanguageCompletions('/demo/App.nova', {
+      tagName: 'AirportGate',
+      manifests: [
+        {
+          packageName: '@demo/nova-airport',
+          version: '1.0.0',
+          groups: [
+            {
+              id: 'airport',
+              title: 'Airport',
+              components: [
+                {
+                  name: 'AirportGate',
+                  title: 'Gate',
+                  description: { ru: 'Гейт аэропорта.' },
+                  props: [
+                    {
+                      name: 'code',
+                      type: 'string',
+                      required: true,
+                      description: { ru: 'Код гейта.' },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(completions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'AirportGate', kind: 'component', documentation: 'Гейт аэропорта.' }),
+      expect.objectContaining({ label: 'code', kind: 'property', detail: 'string', required: true }),
+    ]))
+  })
 })

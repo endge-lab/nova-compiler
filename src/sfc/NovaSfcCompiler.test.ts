@@ -155,6 +155,50 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain('type:__NovaComponent')
   })
 
+  it('collects static SVG assets into an auto Nova asset bundle with dedupe', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Icon src="./plane.svg" asset-color="#52627a" :x="0" :y="0" :width="16" :height="16" />
+          <Icon src="./plane.svg" asset-color="#52627a" :x="20" :y="0" :width="16" :height="16" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './plane.svg'
+        ? { filename: '/demo/plane.svg', source: '<svg />' }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('const __novaSfcAssets = __NovaRuntime.assets.define')
+    expect(result.code.match(/plane\.svg\?raw/g)).toHaveLength(1)
+    expect(result.code).toContain('this.nova.assets.use(__novaSfcAssets)')
+    expect(result.code).toContain('this.nova.assets.unuse(__novaSfcAssets)')
+  })
+
+  it('collects StripePattern fills and excludes declaration nodes from visual schema', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <StripePattern id="weekendStripe" bg-color="transparent" stripe-color="rgba(37,99,235,.08)" :stripe-width="2" />
+          <TimelineChart.Root>
+            <TimelineTaskProfile name="default">
+              <Rect :width="width" :height="height" fill-pattern="weekendStripe" />
+            </TimelineTaskProfile>
+          </TimelineChart.Root>
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('__NovaRuntime.assets.stripe')
+    expect(result.code).toContain('background:__novaSfcAssets.fills.weekendStripe')
+    expect(result.code).not.toContain('type:"StripePattern"')
+  })
+
   it('inlines external template src files inside TimelineTaskProfile bodies', () => {
     const result = compileTimelineTaskProfilesSource(`
       <TimelineTaskProfile name="planned">
@@ -200,7 +244,7 @@ describe('Nova SFC compiler', () => {
               :stroke-width="2"
               color="#10b981"
             />
-            <TextBlock :text="`${group.item.readiness}%`" :x="x + 32" :y="y" :width="width - 32" :height="height" />
+            <TextBlock :text="String(group.item.readiness) + '%'" :x="x + 32" :y="y" :width="width - 32" :height="height" />
           </template>
         </TimelineChart.GroupColumn>
       </TimelineChart.GroupPanel>

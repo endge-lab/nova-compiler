@@ -132,6 +132,33 @@ describe('Nova compiler performance', () => {
     expect(elapsed).toBeLessThan(160)
     console.info(`[bench] compiler:nova-control-flow elapsed=${elapsed.toFixed(2)}ms budget=160ms`)
   })
+
+  it('dedupes 1000 repeated static icon assets under budget', () => {
+    const icons = Array.from({ length: 1_000 }, (_item, index) => (
+      `<Icon id="icon-${index}" src="./assets/icons/team.svg" asset-color="#52627a" :x="${index % 50} * 18" :y="${Math.floor(index / 50)} * 18" :width="14" :height="14" />`
+    )).join('\n')
+    const source = `
+      <template>
+        <Root id="root">
+          ${icons}
+        </Root>
+      </template>
+    `
+    const { result, elapsed } = measureCompileNovaSfc(source, {
+      filename: '/demo/App.nova',
+      resolveImport: request => {
+        if (request === './assets/icons/team.svg') {
+          return { filename: '/demo/assets/icons/team.svg', source: '<svg />' }
+        }
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code.match(/assets\.svg/g)).toHaveLength(1)
+    expect(elapsed).toBeLessThan(250)
+    console.info(`[bench] compiler:nova-assets-1000 elapsed=${elapsed.toFixed(2)}ms budget=250ms`)
+  })
 })
 
 function measureCompileNovaCss(source: string): { result: ReturnType<typeof compileNovaCss>; elapsed: number } {
@@ -147,12 +174,15 @@ function measureCompileNovaCss(source: string): { result: ReturnType<typeof comp
   return best!
 }
 
-function measureCompileNovaSfc(source: string): { result: ReturnType<typeof compileNovaSfc>; elapsed: number } {
+function measureCompileNovaSfc(
+  source: string,
+  options?: Parameters<typeof compileNovaSfc>[1],
+): { result: ReturnType<typeof compileNovaSfc>; elapsed: number } {
   let best: { result: ReturnType<typeof compileNovaSfc>; elapsed: number } | null = null
 
   for (let index = 0; index < 3; index += 1) {
     const start = performance.now()
-    const result = compileNovaSfc(source)
+    const result = compileNovaSfc(source, options)
     const elapsed = performance.now() - start
     if (!best || elapsed < best.elapsed) best = { result, elapsed }
   }

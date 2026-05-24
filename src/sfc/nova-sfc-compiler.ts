@@ -56,6 +56,7 @@ export interface NovaSfcSourceMetadata {
 
 interface TemplateNode {
   tag: string
+  filename?: string
   attrs: Record<string, string | true>
   attrRanges: Record<string, NovaSourceRange>
   range: NovaSourceRange
@@ -84,12 +85,19 @@ interface ScriptSetupCompileResult {
   importedRuntimeSymbols: Set<string>
   topLevelNames: Set<string>
   importBindings: Map<string, ScriptSetupImportBinding>
+  assetImports: Array<NovaAssetImportBinding>
 }
 
 interface ScriptSetupImportBinding {
   local: string
   imported: string
   source: string
+}
+
+interface NovaAssetImportBinding {
+  local: string
+  source: string
+  kind: NovaAutoAssetKind
 }
 
 interface StyleCompileResult {
@@ -106,6 +114,29 @@ interface GenerateContext {
   generatedImports: Array<string>
   componentImports: Map<string, string>
   hasScopedStyles: boolean
+  assets: NovaAutoAssetRegistry
+  filename?: string
+  resolveImport?: NovaCssCompileOptions['resolveImport']
+  dependencies?: Set<string>
+}
+
+type NovaAutoAssetKind = 'icon' | 'image' | 'fill'
+
+interface NovaAutoAssetRecord {
+  key: string
+  name: string
+  kind: NovaAutoAssetKind
+  request?: string
+  importName?: string
+  descriptor: string
+}
+
+interface NovaAutoAssetRegistry {
+  records: Map<string, NovaAutoAssetRecord>
+  refsByKey: Map<string, string>
+  importRefs: Map<string, string>
+  patternRefs: Map<string, string>
+  importBindings: Array<{ local: string; ref: string }>
 }
 
 const UI_KIT_TAGS = new Set([
@@ -151,6 +182,45 @@ const UI_KIT_TAGS = new Set([
   'Tabs',
   'Stepper',
 ])
+const ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
+const ASSET_PATH_PROPS = new Set(['src', 'source', 'icon', 'background'])
+const ASSET_OPTION_PROPS = new Set(['asset-color', 'assetColor'])
+const PATTERN_DECLARATION_TAGS = new Set(['StripePattern'])
+
+function createNovaAutoAssetRegistry(): NovaAutoAssetRegistry {
+  return {
+    records: new Map(),
+    refsByKey: new Map(),
+    importRefs: new Map(),
+    patternRefs: new Map(),
+    importBindings: [],
+  }
+}
+
+function resolveAssetKind(request: string): NovaAutoAssetKind | null {
+  const extension = assetExtension(request)
+  if (!extension) return null
+  if (extension === '.svg') return 'icon'
+  if (IMAGE_EXTENSIONS.has(extension)) return 'image'
+  return null
+}
+
+function assetExtension(request: string): string | null {
+  const clean = request.split('?')[0]?.toLowerCase() ?? ''
+  const match = clean.match(/\.[a-z0-9]+$/)
+  return match?.[0] ?? null
+}
+
+function isAssetPath(value: string): boolean {
+  const extension = assetExtension(value)
+  return Boolean(extension && ASSET_EXTENSIONS.has(extension))
+}
+
+function safeAssetName(input: string): string {
+  const base = input.split('?')[0]?.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? 'asset'
+  return base.replace(/[^A-Za-z0-9_$]+/g, '_').replace(/^([^A-Za-z_$])/, '_$1') || 'asset'
+}
 
 const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
   ['press', 'onPress'],
@@ -177,7 +247,7 @@ const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
 const TIMELINE_PROFILE_MARKER_TAGS = new Set(['TimelineTaskProfile'])
-const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Text', 'TextBlock'])
+const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Icon', 'Text', 'TextBlock'])
 const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupPanel', 'TimelineChart.GroupColumn'])
 const TIMELINE_GROUP_SCHEMA_TAGS = new Set(['Rect', 'Line', 'Circle', 'Icon', 'Text', 'TextBlock', 'ProgressRing'])
 const CORE_DSL_TAGS: Record<string, string> = {
@@ -238,6 +308,10 @@ export function compileTimelineTaskProfilesSource(
     generatedImports: [],
     componentImports: new Map(),
     hasScopedStyles: false,
+    assets: createNovaAutoAssetRegistry(),
+    filename: options.filename,
+    resolveImport: options.resolveImport,
+    dependencies,
   }
 
   return {
@@ -270,6 +344,10 @@ export function compileTimelineGroupColumnTemplatesSource(
     generatedImports: [],
     componentImports: new Map(),
     hasScopedStyles: false,
+    assets: createNovaAutoAssetRegistry(),
+    filename: options.filename,
+    resolveImport: options.resolveImport,
+    dependencies,
   }
 
   return {
@@ -334,7 +412,13 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     generatedImports: [],
     componentImports: new Map(),
     hasScopedStyles: styles.hasScopedStyles,
+    assets: createNovaAutoAssetRegistry(),
+    filename,
+    resolveImport: options.resolveImport,
+    dependencies,
   }
+  registerScriptAssetImports(setup.assetImports, context)
+  registerPatternDeclarations(templateNodes, context)
   const templateCode = generateNodeSequence(templateNodes, context)
 
   return {
@@ -348,6 +432,7 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
       hasScopedStyles: styles.hasScopedStyles,
       hasGlobalStyles: styles.hasGlobalStyles,
       generatedImports: context.generatedImports,
+      autoAssetBundleCode: generateAutoAssetBundleCode(context.assets),
     }),
     diagnostics,
     scopeId,
@@ -400,6 +485,7 @@ function joinStyleSources(styles: Array<SFCStyleBlock>, options: NovaSfcCompileO
 function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagnostic>): ScriptSetupCompileResult {
   const importRanges: Array<[number, number]> = []
   const imports: Array<string> = []
+  const assetImports: Array<NovaAssetImportBinding> = []
   const importedRuntimeSymbols = new Set<string>()
   const topLevelNames = new Set<string>()
   const importBindings = new Map<string, ScriptSetupImportBinding>()
@@ -414,6 +500,17 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
       for (const statement of ast.program.body as Array<any>) {
         if (typeof statement.start === 'number' && typeof statement.end === 'number' && statement.type === 'ImportDeclaration') {
           importRanges.push([statement.start, statement.end])
+          const importSource = String(statement.source.value)
+          const assetKind = resolveAssetKind(importSource)
+          if (statement.importKind !== 'type' && assetKind && statement.specifiers.length === 1 && statement.specifiers[0]?.type === 'ImportDefaultSpecifier') {
+            assetImports.push({
+              local: statement.specifiers[0].local.name,
+              source: importSource,
+              kind: assetKind,
+            })
+            topLevelNames.add(statement.specifiers[0].local.name)
+            continue
+          }
           if (statement.importKind !== 'type') imports.push(source.slice(statement.start, statement.end))
           if (statement.importKind !== 'type') {
             for (const specifier of statement.specifiers) {
@@ -422,7 +519,7 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
               importBindings.set(specifier.local.name, {
                 local: specifier.local.name,
                 imported: resolveImportedName(specifier),
-                source: String(statement.source.value),
+                source: importSource,
               })
             }
           }
@@ -452,6 +549,7 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
     importedRuntimeSymbols,
     topLevelNames,
     importBindings,
+    assetImports,
   }
 }
 
@@ -571,6 +669,7 @@ function convertTemplateChild(
   if (element.tagType === ElementTypes.SLOT) {
     return [{
       tag: 'slot',
+      filename: options.filename,
       attrs: collectElementAttrs(element, diagnostics),
       attrRanges: collectElementAttrRanges(element, baseOffset),
       range: toSourceRange(element, baseOffset),
@@ -584,6 +683,7 @@ function convertTemplateChild(
 
   return [{
     tag: element.tag,
+    filename: options.filename,
     attrs: collectElementAttrs(element, diagnostics),
     attrRanges: collectElementAttrRanges(element, baseOffset),
     range: toSourceRange(element, baseOffset),
@@ -900,6 +1000,140 @@ function toTagSourceRange(element: ElementNode, baseOffset: number): NovaSourceR
   }
 }
 
+function registerScriptAssetImports(bindings: Array<NovaAssetImportBinding>, context: GenerateContext): void {
+  for (const binding of bindings) {
+    const ref = registerPathAsset(context, {
+      request: binding.source,
+      kind: binding.kind,
+    })
+    context.assets.importRefs.set(binding.local, ref)
+    context.assets.importBindings.push({ local: binding.local, ref })
+  }
+}
+
+function registerPatternDeclarations(nodes: Array<TemplateNode>, context: GenerateContext): void {
+  for (const node of nodes) {
+    if (node.tag === 'StripePattern') {
+      const id = readAttr(node, 'id')
+      if (!id) {
+        context.diagnostics.push({
+          severity: 'error',
+          code: 'stripe-pattern-id',
+          message: '<StripePattern> требует статический id.',
+        })
+      } else {
+        registerStripePatternAsset(node, id, context)
+      }
+    }
+    registerPatternDeclarations(node.children, context)
+    for (const slot of Object.values(node.slots)) registerPatternDeclarations(slot.children, context)
+  }
+}
+
+function registerPathAsset(
+  context: GenerateContext,
+  input: {
+    request: string
+    kind?: NovaAutoAssetKind | null
+    color?: string
+    from?: string
+  },
+): string {
+  const kind = input.kind ?? resolveAssetKind(input.request)
+  if (!kind) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'unsupported-asset-extension',
+      message: `Asset "${input.request}" использует неподдерживаемое расширение.`,
+    })
+    return 'undefined'
+  }
+
+  const resolved = context.resolveImport?.(input.request, input.from ?? context.filename)
+  if (context.resolveImport && !resolved) {
+    context.diagnostics.push({
+      severity: 'error',
+      code: 'asset-not-found',
+      message: `Не найден asset "${input.request}".`,
+    })
+  }
+
+  const resolvedFilename = resolved && typeof resolved !== 'string' ? resolved.filename : undefined
+  if (resolvedFilename) context.dependencies?.add(resolvedFilename)
+
+  const canonicalRequest = resolvedFilename ?? input.request
+  const key = `path:${kind}:${canonicalRequest}:${input.color ?? ''}`
+  const existing = context.assets.refsByKey.get(key)
+  if (existing) return existing
+
+  const name = `${safeAssetName(input.request)}_${context.assets.records.size.toString(36)}`
+  const importName = `__novaAsset${context.assets.records.size}`
+  const importRequest = kind === 'icon' ? `${canonicalRequest}?raw` : canonicalRequest
+  context.generatedImports.push(`import ${importName} from ${JSON.stringify(importRequest)};`)
+
+  const descriptor = kind === 'icon'
+    ? `__NovaRuntime.assets.svg(${importName}, { width: 24, height: 24${input.color ? `, color: ${JSON.stringify(input.color)}` : ''} })`
+    : `__NovaRuntime.assets.image(${importName})`
+
+  const record: NovaAutoAssetRecord = {
+    key,
+    name,
+    kind,
+    request: input.request,
+    importName,
+    descriptor,
+  }
+  context.assets.records.set(key, record)
+
+  const ref = `__novaSfcAssets.${kind === 'fill' ? 'fills' : `${kind}s`}.${name}`
+  context.assets.refsByKey.set(key, ref)
+  return ref
+}
+
+function registerStripePatternAsset(node: TemplateNode, id: string, context: GenerateContext): string {
+  const descriptorKey = [
+    groupAttr(node, 'bgColor') || groupAttr(node, 'bg-color') || '"transparent"',
+    groupAttr(node, 'stripeColor') || groupAttr(node, 'stripe-color') || '"rgba(15, 23, 42, 0.12)"',
+    groupAttr(node, 'stripeWidth') || groupAttr(node, 'stripe-width') || '2',
+    groupAttr(node, 'angle') || '45',
+    groupAttr(node, 'sizeK') || groupAttr(node, 'size-k') || '8',
+  ].join('|')
+  const key = `stripe:${id}:${descriptorKey}`
+  const existingRef = context.assets.patternRefs.get(id)
+  if (existingRef) {
+    const existingKey = [...context.assets.refsByKey.entries()].find(([, ref]) => ref === existingRef)?.[0]
+    if (existingKey && existingKey !== key) {
+      context.diagnostics.push({
+        severity: 'error',
+        code: 'duplicate-stripe-pattern',
+        message: `StripePattern "${id}" объявлен повторно с другими параметрами.`,
+      })
+    }
+    return existingRef
+  }
+
+  const name = safeAssetName(id)
+  const descriptor = `__NovaRuntime.assets.stripe({
+      bgColor: ${groupAttr(node, 'bgColor') || groupAttr(node, 'bg-color') || '"transparent"'},
+      stripeColor: ${groupAttr(node, 'stripeColor') || groupAttr(node, 'stripe-color') || '"rgba(15, 23, 42, 0.12)"'},
+      stripeWidth: ${groupAttr(node, 'stripeWidth') || groupAttr(node, 'stripe-width') || '2'},
+      angle: ${groupAttr(node, 'angle') || '45'},
+      sizeK: ${groupAttr(node, 'sizeK') || groupAttr(node, 'size-k') || '8'},
+    })`
+  const record: NovaAutoAssetRecord = {
+    key,
+    name,
+    kind: 'fill',
+    descriptor,
+  }
+  context.assets.records.set(key, record)
+
+  const ref = `__novaSfcAssets.fills.${name}`
+  context.assets.refsByKey.set(key, ref)
+  context.assets.patternRefs.set(id, ref)
+  return ref
+}
+
 function validateTemplateNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
@@ -936,6 +1170,7 @@ function validateTemplateNodeList(
       && !TIMELINE_PROFILE_MARKER_TAGS.has(node.tag)
       && !TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)
       && !TIMELINE_GROUP_MARKER_TAGS.has(node.tag)
+      && !PATTERN_DECLARATION_TAGS.has(node.tag)
       && !node.tag.includes('.')
       && !isComponentInclude
       && !isImportedComponent
@@ -947,7 +1182,7 @@ function validateTemplateNodeList(
       })
     }
 
-    if (readAttr(node, 'for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
+    if (!PATTERN_DECLARATION_TAGS.has(node.tag) && readAttr(node, 'for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
       diagnostics.push({
         severity: 'error',
         code: 'missing-key',
@@ -1008,6 +1243,7 @@ function generateNodeSequence(nodes: Array<TemplateNode>, context: GenerateConte
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]
+    if (PATTERN_DECLARATION_TAGS.has(node.tag)) continue
     if (readAttr(node, 'else-if') || hasControlElseAttr(node)) continue
 
     const condition = readAttr(node, 'if')
@@ -1175,6 +1411,31 @@ function generateSlotOutletScope(node: TemplateNode): string {
   return entries.length > 0 ? `{${entries.join(',')}}` : '{}'
 }
 
+function generateAutoAssetBundleCode(registry: NovaAutoAssetRegistry): string {
+  const records = [...registry.records.values()]
+  if (records.length === 0) return ''
+
+  const byKind = {
+    icon: records.filter(record => record.kind === 'icon'),
+    image: records.filter(record => record.kind === 'image'),
+    fill: records.filter(record => record.kind === 'fill'),
+  }
+  const objectFor = (items: Array<NovaAutoAssetRecord>): string => {
+    if (items.length === 0) return ''
+    return items.map(record => `${quoteKey(record.name)}:${record.descriptor}`).join(',')
+  }
+  const sections = [
+    byKind.icon.length ? `icons:{${objectFor(byKind.icon)}}` : '',
+    byKind.image.length ? `images:{${objectFor(byKind.image)}}` : '',
+    byKind.fill.length ? `fills:{${objectFor(byKind.fill)}}` : '',
+  ].filter(Boolean)
+
+  return `const __novaSfcAssets = __NovaRuntime.assets.define('nova-sfc-${createHash('sha1').update(records.map(record => record.key).join('|')).digest('hex').slice(0, 10)}', {
+  ${sections.join(',\n  ')}
+});
+${registry.importBindings.map(binding => `const ${binding.local} = ${binding.ref};`).join('\n')}`
+}
+
 function isTimelineRootTag(node: TemplateNode): boolean {
   return node.tag === 'TimelineChart.Root'
 }
@@ -1314,10 +1575,10 @@ function generateTimelineGroupColumnSchemaNode(node: TemplateNode, context: Gene
 }
 
 function generateTimelineGroupColumnSchema(node: TemplateNode, context: GenerateContext): string {
-  if (node.tag === 'Rect') return generateTimelineGroupRectSchema(node)
+  if (node.tag === 'Rect') return generateTimelineGroupRectSchema(node, context)
   if (node.tag === 'Line') return generateTimelineGroupLineSchema(node)
   if (node.tag === 'Circle') return generateTimelineGroupCircleSchema(node)
-  if (node.tag === 'Icon') return generateTimelineGroupIconSchema(node)
+  if (node.tag === 'Icon') return generateTimelineGroupIconSchema(node, context)
   if (node.tag === 'Text' || node.tag === 'TextBlock') return generateTimelineGroupTextSchema(node)
   if (node.tag === 'ProgressRing') return generateTimelineGroupProgressRingSchema(node)
 
@@ -1329,9 +1590,9 @@ function generateTimelineGroupColumnSchema(node: TemplateNode, context: Generate
   return 'null'
 }
 
-function generateTimelineGroupRectSchema(node: TemplateNode): string {
+function generateTimelineGroupRectSchema(node: TemplateNode, context: GenerateContext): string {
   const styleEntries = [
-    groupStyleEntry(node, 'background'),
+    groupBackgroundStyleEntry(node, context),
     groupStyleEntry(node, 'radius'),
     groupStyleEntry(node, 'border'),
     groupStyleEntry(node, 'opacity'),
@@ -1384,14 +1645,14 @@ function generateTimelineGroupCircleSchema(node: TemplateNode): string {
   return `{${entries.join(',')}}`
 }
 
-function generateTimelineGroupIconSchema(node: TemplateNode): string {
+function generateTimelineGroupIconSchema(node: TemplateNode, context: GenerateContext): string {
   const styleEntries = [
     groupStyleEntry(node, 'opacity'),
     groupStyleEntry(node, 'quality'),
   ].filter(Boolean)
   const entries = [
     'type:\'icon\'',
-    `icon:${groupAttr(node, 'icon', "''")}`,
+    `icon:${groupIconAttr(node, context)}`,
     `x:${groupAttr(node, 'x', 'x')}`,
     `y:${groupAttr(node, 'y', 'y')}`,
     `width:${groupAttr(node, 'width', 'width')}`,
@@ -1451,6 +1712,42 @@ function groupCommonEntries(node: TemplateNode): Array<string> {
 function groupStyleEntry(node: TemplateNode, name: string): string {
   const value = groupAttr(node, name)
   return value ? `${quoteKey(name)}:${value}` : ''
+}
+
+function groupBackgroundStyleEntry(node: TemplateNode, context: GenerateContext): string {
+  const fillPattern = readAttr(node, 'fill-pattern') ?? readAttr(node, 'fillPattern')
+  if (fillPattern) {
+    const ref = context.assets.patternRefs.get(fillPattern)
+    if (!ref) {
+      context.diagnostics.push({
+        severity: 'error',
+        code: 'unknown-fill-pattern',
+        message: `Fill pattern "${fillPattern}" не объявлен через <StripePattern>.`,
+      })
+      return ''
+    }
+    return `background:${ref}`
+  }
+
+  const background = readAttr(node, 'background')
+  if (background && isAssetPath(background)) {
+    return `background:${registerPathAsset(context, { request: background, from: node.filename })}`
+  }
+
+  return groupStyleEntry(node, 'background')
+}
+
+function groupIconAttr(node: TemplateNode, context: GenerateContext): string {
+  const icon = groupAttr(node, 'icon')
+  if (icon) return icon
+
+  const source = readAttr(node, 'src') ?? readAttr(node, 'source')
+  if (source && isAssetPath(source)) {
+    const color = readAttr(node, 'asset-color') ?? readAttr(node, 'assetColor')
+    return registerPathAsset(context, { request: source, color, from: node.filename })
+  }
+
+  return "''"
 }
 
 function groupEntry(node: TemplateNode, name: string, targetName = name): string {
@@ -1513,7 +1810,7 @@ function validateTimelineTaskProfileChildren(
       diagnostics.push({
         severity: 'error',
         code: 'timeline-profile-unsupported-node',
-        message: `TimelineTaskProfile пока поддерживает только Rect, Text и TextBlock. Получен <${node.tag}>.`,
+        message: `TimelineTaskProfile пока поддерживает только Rect, Icon, Text и TextBlock. Получен <${node.tag}>.`,
       })
       continue
     }
@@ -1576,7 +1873,10 @@ function generateTimelineProfileNode(node: TemplateNode, context: GenerateContex
 
 function generateTimelineProfileSchema(node: TemplateNode, context: GenerateContext): string {
   if (node.tag === 'Rect') {
-    return generateTimelineRectSchema(node)
+    return generateTimelineRectSchema(node, context)
+  }
+  if (node.tag === 'Icon') {
+    return generateTimelineIconSchema(node, context)
   }
   if (node.tag === 'Text' || node.tag === 'TextBlock') {
     return generateTimelineTextSchema(node)
@@ -1585,14 +1885,14 @@ function generateTimelineProfileSchema(node: TemplateNode, context: GenerateCont
   context.diagnostics.push({
     severity: 'error',
     code: 'timeline-profile-unsupported-node',
-    message: `TimelineTaskProfile пока поддерживает только Rect, Text и TextBlock. Получен <${node.tag}>.`,
+    message: `TimelineTaskProfile пока поддерживает только Rect, Icon, Text и TextBlock. Получен <${node.tag}>.`,
   })
   return 'null'
 }
 
-function generateTimelineRectSchema(node: TemplateNode): string {
+function generateTimelineRectSchema(node: TemplateNode, context: GenerateContext): string {
   const styleEntries = [
-    profileStyleEntry(node, 'background'),
+    profileBackgroundStyleEntry(node, context),
     profileStyleEntry(node, 'radius'),
     profileStyleEntry(node, 'border'),
     profileStyleEntry(node, 'opacity'),
@@ -1607,6 +1907,24 @@ function generateTimelineRectSchema(node: TemplateNode): string {
     `styles:{${styleEntries.join(',')}}`,
   ]
 
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineIconSchema(node: TemplateNode, context: GenerateContext): string {
+  const styleEntries = [
+    profileStyleEntry(node, 'opacity'),
+    profileStyleEntry(node, 'quality'),
+  ].filter(Boolean)
+  const entries = [
+    'type:\'icon\'',
+    `icon:${profileIconAttr(node, context)}`,
+    `x:x + (${profileAttr(node, 'x', '0')})`,
+    `y:y + (${profileAttr(node, 'y', '0')})`,
+    `width:${profileAttr(node, 'width', 'width')}`,
+    `height:${profileAttr(node, 'height', 'height')}`,
+    ...profileCommonEntries(node),
+    `styles:{${styleEntries.join(',')}}`,
+  ]
   return `{${entries.join(',')}}`
 }
 
@@ -1645,6 +1963,42 @@ function profileCommonEntries(node: TemplateNode): Array<string> {
 function profileStyleEntry(node: TemplateNode, name: string): string {
   const value = profileAttr(node, name)
   return value ? `${quoteKey(name)}:${value}` : ''
+}
+
+function profileBackgroundStyleEntry(node: TemplateNode, context: GenerateContext): string {
+  const fillPattern = readAttr(node, 'fill-pattern') ?? readAttr(node, 'fillPattern')
+  if (fillPattern) {
+    const ref = context.assets.patternRefs.get(fillPattern)
+    if (!ref) {
+      context.diagnostics.push({
+        severity: 'error',
+        code: 'unknown-fill-pattern',
+        message: `Fill pattern "${fillPattern}" не объявлен через <StripePattern>.`,
+      })
+      return ''
+    }
+    return `background:${ref}`
+  }
+
+  const background = readAttr(node, 'background')
+  if (background && isAssetPath(background)) {
+    return `background:${registerPathAsset(context, { request: background, from: node.filename })}`
+  }
+
+  return profileStyleEntry(node, 'background')
+}
+
+function profileIconAttr(node: TemplateNode, context: GenerateContext): string {
+  const icon = profileAttr(node, 'icon')
+  if (icon) return icon
+
+  const source = readAttr(node, 'src') ?? readAttr(node, 'source')
+  if (source && isAssetPath(source)) {
+    const color = readAttr(node, 'asset-color') ?? readAttr(node, 'assetColor')
+    return registerPathAsset(context, { request: source, color, from: node.filename })
+  }
+
+  return "''"
 }
 
 function profileEntry(node: TemplateNode, name: string): string {
@@ -1727,8 +2081,9 @@ function generateProps(
       || name === ':context'
       || name === 'layout'
       || name === ':layout'
-      || name === 'src'
+      || (node.tag === 'Component' && name === 'src')
       || name === ':src'
+      || ASSET_OPTION_PROPS.has(name)
       || isControlFlowAttr(name)
       || name.startsWith('@')
     ) continue
@@ -1742,6 +2097,11 @@ function generateProps(
 
     const propName = normalizeDslPropName(name)
     if (hasConflictingPropAlias(node, name, propName, context)) continue
+    const assetProp = generateStaticAssetProp(node, propName, value, context)
+    if (assetProp) {
+      props.push(assetProp)
+      continue
+    }
     props.push(`${quoteKey(propName)}:${serializeStaticAttr(value)}`)
   }
 
@@ -1802,6 +2162,36 @@ function hasConflictingPropAlias(
   }
 
   return false
+}
+
+function generateStaticAssetProp(
+  node: TemplateNode,
+  propName: string,
+  value: string | true,
+  context: GenerateContext,
+): string {
+  if (typeof value !== 'string') return ''
+  if (propName === 'fillPattern') {
+    const ref = context.assets.patternRefs.get(value)
+    if (!ref) {
+      context.diagnostics.push({
+        severity: 'error',
+        code: 'unknown-fill-pattern',
+        message: `Fill pattern "${value}" не объявлен через <StripePattern>.`,
+      })
+      return ''
+    }
+    return `background:${ref}`
+  }
+
+  if (!ASSET_PATH_PROPS.has(propName) || !isAssetPath(value)) return ''
+  const color = readAttr(node, 'asset-color') ?? readAttr(node, 'assetColor')
+  const ref = registerPathAsset(context, {
+    request: value,
+    color,
+    from: node.filename,
+  })
+  return `${quoteKey(propName === 'src' || propName === 'source' ? 'icon' : propName)}:${ref}`
 }
 
 function generateHandler(value: string | true): string {
@@ -1934,6 +2324,7 @@ function generateModule(options: {
   hasScopedStyles: boolean
   hasGlobalStyles: boolean
   generatedImports: Array<string>
+  autoAssetBundleCode: string
 }): string {
   const setupNames = new Set(options.setup.names)
   const topLevelNames = options.setup.topLevelNames
@@ -1960,6 +2351,12 @@ function generateModule(options: {
     ? `return { ${options.setup.names.join(', ')} };`
     : 'return {};'
   const globalStylesExpression = options.hasGlobalStyles ? '[__novaSfcGlobalStyle]' : '[]'
+  const useAutoAssets = options.autoAssetBundleCode
+    ? 'this.nova.assets.use(__novaSfcAssets);'
+    : ''
+  const unuseAutoAssets = options.autoAssetBundleCode
+    ? 'this.nova.assets.unuse(__novaSfcAssets);'
+    : ''
 
   return `import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime } from '@endge/nova';
 import { NovaUIKit as __NovaUIKit, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
@@ -1969,6 +2366,7 @@ ${options.generatedImports.join('\n')}
 const __novaSfcStyle = ${options.scopedStyleAssetCode};
 const __novaSfcGlobalStyle = ${options.globalStyleAssetCode};
 const __novaSfcGlobalStyles = ${globalStylesExpression};
+${options.autoAssetBundleCode}
 const __novaUiKitRegisteredApps = new WeakSet();
 const __ensureNovaUiKit = app => {
   if (__novaUiKitRegisteredApps.has(app)) return;
@@ -1998,6 +2396,7 @@ export default class ${options.className} extends NovaNode {
     this.listeners = listeners;
     this.slots = slots;
     this.__novaGlobalStyleDisposers = [];
+${indent(useAutoAssets, 4)}
     this.installGlobalStyles();
     this.templateRuntime = new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} });
     this.setupState = this.setup();
@@ -2081,6 +2480,7 @@ ${indent(templateLocalDeclarations, 4)}
 
   dispose() {
     this.templateRuntime.dispose();
+${indent(unuseAutoAssets, 4)}
     for (const dispose of this.__novaGlobalStyleDisposers.splice(0)) dispose();
     super.dispose();
   }
