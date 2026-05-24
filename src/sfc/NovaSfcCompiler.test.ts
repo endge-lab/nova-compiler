@@ -224,6 +224,76 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain('type:"StripePattern"')
   })
 
+  it('collects Nova.Assets declarations and excludes the assets container from visual schema', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const heatmapCanvas = document.createElement('canvas')
+      </script>
+      <template>
+        <Root>
+          <Nova.Assets>
+            <Nova.StripePattern id="softTaskStripe" bg-color="transparent" stripe-color="rgba(255,255,255,.16)" :stripe-width="2" />
+            <Nova.Image id="terminalMap" src="./terminal.png" />
+            <Nova.Icon id="warningIcon" src="./warning.svg" color="#ef4444" />
+            <Nova.CanvasTexture id="heatmapTexture" :source="heatmapCanvas" />
+            <Nova.LinearGradient id="taskFade" from="#ffffff" to="rgba(255,255,255,0)" :angle="90" />
+          </Nova.Assets>
+          <Image src="terminalMap" />
+          <Icon icon="warningIcon" :x="0" :y="0" :width="16" :height="16" />
+          <Rect :width="100" :height="20" fill-pattern="taskFade" />
+          <Rect :width="100" :height="20" background="heatmapTexture" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => {
+        if (request === './terminal.png') return { filename: '/demo/terminal.png', source: '' }
+        if (request === './warning.svg') return { filename: '/demo/warning.svg', source: '<svg />' }
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('__NovaRuntime.assets.stripe')
+    expect(result.code).toContain('__NovaRuntime.assets.image')
+    expect(result.code).toContain('__NovaRuntime.assets.svg')
+    expect(result.code).toContain('__NovaRuntime.assets.canvas')
+    expect(result.code).toContain('__NovaRuntime.assets.linearGradient')
+    expect(result.code).toContain('src:__novaSfcAssets.images.terminalMap')
+    expect(result.code).toContain('icon:__novaSfcAssets.icons.warningIcon')
+    expect(result.code).toContain('background:__novaSfcAssets.fills.taskFade')
+    expect(result.code).toContain('background:__novaSfcAssets.fills.heatmapTexture')
+    expect(result.code).not.toContain('type:"Nova.Assets"')
+    expect(result.code).not.toContain('type:"Nova.StripePattern"')
+  })
+
+  it('registers imported Nova.Assets bundles in component lifecycle', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import timelineAssets from './timeline.assets'
+      </script>
+      <template>
+        <Root>
+          <Nova.Assets global src="./shared.assets" />
+          <Nova.Assets global :bundle="timelineAssets" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => {
+        if (request === './shared.assets') return { filename: '/demo/shared.assets.ts', source: 'export default {}' }
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('import __novaAssetBundle0 from "/demo/shared.assets.ts";')
+    expect(result.code).toContain('this.refreshAssetBundles();')
+    expect(result.code).toContain('const bundles = [__novaAssetBundle0, timelineAssets].filter(Boolean);')
+    expect(result.code).toContain('this.nova.assets.use(bundle);')
+    expect(result.code).toContain('this.nova.assets.unuse(bundle);')
+  })
+
   it('inlines external template src files inside TimelineTaskProfile bodies', () => {
     const result = compileTimelineTaskProfilesSource(`
       <TimelineTaskProfile name="planned">

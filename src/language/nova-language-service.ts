@@ -86,6 +86,12 @@ const COMPONENT_COMPLETIONS = [
   'Tooltip',
   'SegmentedControl',
   'Panel',
+  'Nova.Assets',
+  'Nova.StripePattern',
+  'Nova.Image',
+  'Nova.Icon',
+  'Nova.CanvasTexture',
+  'Nova.LinearGradient',
 ]
 
 const STYLE_COMPLETIONS = [
