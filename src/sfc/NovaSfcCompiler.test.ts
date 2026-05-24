@@ -591,6 +591,29 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('select:(...args) => (emit')
   })
 
+  it('compiles default imported nova components through tag syntax', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Header from './layout/Header.nova'
+      </script>
+
+      <template>
+        <Root>
+          <Header :layout="{ width: 'fill', height: 48 }" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain("import Header from './layout/Header.nova'")
+    expect(result.code).toContain('type:Header')
+    expect(result.code).toContain("layout:{ width: 'fill', height: 48 }")
+    expect(result.code).toContain('this[NOVA_UI_STYLE_TARGET] = true')
+    expect(result.code).toContain('this.__novaRefreshParentStyleCascade()')
+  })
+
   it('keeps native events in schema events and maps UI Kit semantic events to callback props', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">

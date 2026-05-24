@@ -2740,7 +2740,7 @@ function generateModule(options: {
     : ''
 
   return `import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime } from '@endge/nova';
-import { NovaUIKit as __NovaUIKit, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
+import { EMPTY_STYLE_CONTEXT, NOVA_UI_STYLE_TARGET, NovaUiStyleMask, NovaUIKit as __NovaUIKit, findNovaUiRoot, isNovaUiStyleTarget, mergeStyleReceiveResult, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
 ${options.setup.imports.join('\n')}
 ${options.generatedImports.join('\n')}
 
@@ -2772,11 +2772,13 @@ export const novaGlobalStyleSheets = __novaSfcGlobalStyles;
 export default class ${options.className} extends NovaNode {
   constructor(app, surface, props = {}, listeners = {}, slots = {}) {
     super(app, surface);
+    this[NOVA_UI_STYLE_TARGET] = true;
     __ensureNovaUiKit(app);
     this.props = props;
     this.listeners = listeners;
     this.slots = slots;
     this.__novaGlobalStyleDisposers = [];
+    this.__novaInheritedStyleContext = EMPTY_STYLE_CONTEXT;
 ${indent(useAutoAssets, 4)}
     this.installGlobalStyles();
     this.templateRuntime = new NovaTemplateRuntime(this, { refs: props.novaRefs ?? {} });
@@ -2842,9 +2844,47 @@ ${indent(options.setup.body, 4)}
     return typeof slot === 'function' ? slot(scope) : fallback;
   }
 
+  receiveStyleContext(context, changedMask) {
+    this.__novaInheritedStyleContext = context;
+    return this.__novaPropagateStyleContext(changedMask);
+  }
+
+  getSubtreeStyleMask() {
+    let mask = NovaUiStyleMask.AllText;
+    for (const child of this.children) {
+      if (!isNovaUiStyleTarget(child)) continue;
+      mask |= child.getSubtreeStyleMask();
+    }
+    return mask;
+  }
+
+  __novaPropagateStyleContext(changedMask) {
+    const result = { update: false, render: false, layout: false };
+    if (changedMask === NovaUiStyleMask.None) return result;
+    for (const child of this.children) {
+      if (!isNovaUiStyleTarget(child)) continue;
+      const childMask = child.getSubtreeStyleMask();
+      if ((changedMask & childMask) === 0) continue;
+      mergeStyleReceiveResult(
+        result,
+        child.receiveStyleContext(this.__novaInheritedStyleContext, changedMask & childMask),
+      );
+    }
+    return result;
+  }
+
+  __novaRefreshParentStyleCascade() {
+    const root = findNovaUiRoot(this);
+    if (root && typeof root.refreshStyleCascade === 'function') {
+      root.refreshStyleCascade();
+    }
+  }
+
   update() {
     __NovaRuntime.trackNode(this, () => {
-      this.templateRuntime.reconcile(this.createTemplate());
+      const result = this.templateRuntime.reconcile(this.createTemplate());
+      if (result.created > 0 || result.removed > 0) this.__novaRefreshParentStyleCascade();
+      this.__novaPropagateStyleContext(NovaUiStyleMask.AllText);
     });
   }
 
