@@ -170,6 +170,7 @@ const UI_KIT_TAGS = new Set([
   'Checkbox',
   'Toggle',
   'Tooltip',
+  'Tooltips',
   'SegmentedControl',
   'Panel',
   'SpeedDial',
@@ -336,6 +337,7 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Checkbox: 'packages/@endge-nova-ui-kit/src/components/Checkbox/Checkbox.ts',
   Toggle: 'packages/@endge-nova-ui-kit/src/components/Toggle/Toggle.ts',
   Tooltip: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltip.ts',
+  Tooltips: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltips.ts',
   SegmentedControl: 'packages/@endge-nova-ui-kit/src/components/SegmentedControl/SegmentedControl.ts',
   Panel: 'packages/@endge-nova-ui-kit/src/components/Panel/Panel.ts',
 }
@@ -2313,6 +2315,7 @@ function generateSchema(
   isTopLevelRoot: boolean,
 ): string {
   if (node.tag === 'slot') return generateSlotOutlet(node, context)
+  if (node.tag === 'Tooltips') return generateTooltipsSchema(node, context, isTopLevelRoot)
 
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
@@ -3269,6 +3272,10 @@ function groupCommonEntries(node: TemplateNode): Array<string> {
   return [
     groupEntry(node, 'active'),
     groupEntry(node, 'clip'),
+    groupEntry(node, 'class'),
+    groupEntry(node, 'className') || groupEntry(node, 'class-name', 'className'),
+    groupEntry(node, 'attrs'),
+    groupEntry(node, 'style'),
     groupEntry(node, 'meta'),
   ].filter(Boolean)
 }
@@ -3679,6 +3686,10 @@ function profileCommonEntries(node: TemplateNode): Array<string> {
   return [
     profileEntry(node, 'active'),
     profileEntry(node, 'clip'),
+    profileEntry(node, 'class'),
+    profileEntry(node, 'className') || profileEntry(node, 'class-name', 'className'),
+    profileEntry(node, 'attrs'),
+    profileEntry(node, 'style'),
     profileEntry(node, 'meta'),
   ].filter(Boolean)
 }
@@ -3724,9 +3735,9 @@ function profileIconAttr(node: TemplateNode, context: GenerateContext): string {
   return "''"
 }
 
-function profileEntry(node: TemplateNode, name: string): string {
+function profileEntry(node: TemplateNode, name: string, targetName = name): string {
   const value = profileAttr(node, name)
-  return value ? `${quoteKey(name)}:${value}` : ''
+  return value ? `${quoteKey(targetName)}:${value}` : ''
 }
 
 function profileAttr(node: TemplateNode, name: string, fallback?: string): string {
@@ -3736,6 +3747,36 @@ function profileAttr(node: TemplateNode, name: string, fallback?: string): strin
   if (staticValue !== undefined) return serializeStaticAttr(staticValue)
   if (Object.prototype.hasOwnProperty.call(node.attrs, name)) return 'true'
   return fallback ?? ''
+}
+
+function generateTooltipsSchema(
+  node: TemplateNode,
+  context: GenerateContext,
+  isTopLevelRoot: boolean,
+): string {
+  const definitions = node.children
+    .filter(child => child.tag === 'Tooltip')
+    .map(child => generateTooltipDefinition(child, context))
+  const props = mergePropsCode(
+    generateProps(node, context, false, isTopLevelRoot),
+    `definitions:[${definitions.join(',')}]`,
+  )
+  const id = readAttr(node, ':id')
+    ? `id:${readAttr(node, ':id')}`
+    : readAttr(node, 'id')
+      ? `id:${JSON.stringify(readAttr(node, 'id'))}`
+      : ''
+  return `{type:__NovaUIKit.Tooltips,${id ? `${id},` : ''}props:${props}}`
+}
+
+function generateTooltipDefinition(node: TemplateNode, context: GenerateContext): string {
+  const typeExpression = readAttr(node, ':type')
+    ?? (readAttr(node, 'type') ? JSON.stringify(readAttr(node, 'type')) : JSON.stringify('default'))
+  const props = generateProps(node, context, false, false) || '{}'
+  const slot = node.children.length > 0
+    ? `,slot:(slot = {}) => { return ${generateNodeSequence(node.children, context)}; }`
+    : ''
+  return `{type:${typeExpression},props:${props}${slot}}`
 }
 
 function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext): string {

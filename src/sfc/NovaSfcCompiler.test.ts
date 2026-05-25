@@ -216,6 +216,107 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain('type:Markers')
   })
 
+  it('compiles Tooltips registry definitions with implicit slot context', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Tooltips>
+            <Tooltip type="task" content="schema" :width="260">
+              <Flex direction="column" :gap="2">
+                <TextBlock :text="slot.title" />
+                <TextBlock :text="String(slot.value)" />
+              </Flex>
+            </Tooltip>
+            <Tooltip type="markdown" content-mode="markdown" />
+          </Tooltips>
+          <Button
+            text="Task"
+            :tooltip="{ type: 'task', title: 'Blocked', value: props.id, width: 300 }"
+          />
+          <TextBlock text="Markdown" :tooltip="{ type: 'markdown', value: '**Ready**' }" />
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('type:__NovaUIKit.Tooltips')
+    expect(result.code).toContain('definitions:[{type:"task"')
+    expect(result.code).toContain('slot:(slot = {}) =>')
+    expect(result.code).toContain('text:slot.title')
+    expect(result.code).toContain('text:String(slot.value)')
+    expect(result.code).toContain('contentMode:"markdown"')
+    expect(result.code).toContain("tooltip:{ type: 'task', title: 'Blocked', value: props.id, width: 300 }")
+    expect(result.code).toContain("tooltip:{ type: 'markdown', value: '**Ready**' }")
+  })
+
+  it('inlines Tooltips.nova fragments through nova:schema', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Tooltips from './ui/layout/tooltip/Tooltips.nova'
+      </script>
+
+      <template>
+        <Root>
+          <Tooltips nova:schema />
+          <Button text="Open" tooltip="Plain text" />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './ui/layout/tooltip/Tooltips.nova'
+        ? {
+            filename: '/demo/ui/layout/tooltip/Tooltips.nova',
+            source: `
+              <template>
+                <Tooltips>
+                  <Tooltip type="default" :width="220">
+                    <TextBlock :text="String(slot.value)" />
+                  </Tooltip>
+                </Tooltips>
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/ui/layout/tooltip/Tooltips.nova'])
+    expect(result.code).toContain('type:__NovaUIKit.Tooltips')
+    expect(result.code).toContain('text:String(slot.value)')
+    expect(result.code).not.toContain("import Tooltips from './ui/layout/tooltip/Tooltips.nova'")
+  })
+
+  it('keeps large Tooltips registry compile path under budget', () => {
+    const definitions = Array.from({ length: 200 }, (_item, index) => `
+      <Tooltip type="status-${index}" :width="${180 + (index % 5) * 10}">
+        <TextBlock :text="slot.title + ': ' + slot.value" />
+      </Tooltip>
+    `).join('\n')
+    const targets = Array.from({ length: 1_000 }, (_item, index) => `
+      <Button
+        :key="${index}"
+        text="T${index}"
+        :tooltip="{ type: 'status-${index % 200}', title: 'Target ${index}', value: ${index} }"
+      />
+    `).join('\n')
+    const startedAt = performance.now()
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Tooltips>${definitions}</Tooltips>
+          ${targets}
+        </Root>
+      </template>
+    `)
+    const elapsed = performance.now() - startedAt
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('definitions:[{type:"status-0"')
+    expect(result.code).toContain("tooltip:{ type: 'status-199'")
+    expect(elapsed).toBeLessThan(1_500)
+    console.info(`[bench] nova-compiler:tooltips-large elapsed=${elapsed.toFixed(2)}ms budget=1500ms definitions=200 targets=1000`)
+  })
+
   it('reports invalid nova:schema usage', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">
@@ -924,6 +1025,18 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('radius:8')
     expect(result.code).toContain('selectionHighlight:{ radius: 10 }')
+  })
+
+  it('forwards TimelineTaskProfile primitive class metadata for NovaCSS virtual selectors', () => {
+    const result = compileTimelineTaskProfilesSource(`
+      <TimelineTaskProfile name="planned">
+        <Rect :width="width" :height="height" background="#f8fafc" class="test-bg" :attrs="{ state: 'planned' }" />
+      </TimelineTaskProfile>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('class:"test-bg"')
+    expect(result.code).toContain("attrs:{ state: 'planned' }")
   })
 
   it('compiles TimelineChart annotation profiles into visualProfiles on TimelineChart.Root', () => {
