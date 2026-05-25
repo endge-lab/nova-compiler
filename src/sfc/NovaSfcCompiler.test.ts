@@ -286,6 +286,65 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain("import Tooltips from './ui/layout/tooltip/Tooltips.nova'")
   })
 
+  it('resolves nested nova:schema imports from included fragments', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Dialogs from './ui/layout/Dialogs.nova'
+      </script>
+
+      <template>
+        <Root>
+          <Dialogs nova:schema />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => {
+        if (request === './ui/layout/Dialogs.nova') {
+          return {
+            filename: '/demo/ui/layout/Dialogs.nova',
+            source: `
+              <script setup lang="ts">
+              import TimelineHistoryDialog from '../timeline/dialogs/TimelineHistoryDialog.nova'
+              </script>
+
+              <template>
+                <Dialogs id="timeline-example-dialogs">
+                  <TimelineHistoryDialog nova:schema />
+                </Dialogs>
+              </template>
+            `,
+          }
+        }
+
+        if (request === '../timeline/dialogs/TimelineHistoryDialog.nova') {
+          return {
+            filename: '/demo/ui/timeline/dialogs/TimelineHistoryDialog.nova',
+            source: `
+              <template>
+                <Dialog type="history" title="History">
+                  <TextBlock :text="String(slot.value ?? '')" />
+                </Dialog>
+              </template>
+            `,
+          }
+        }
+
+        return null
+      },
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual([
+      '/demo/ui/layout/Dialogs.nova',
+      '/demo/ui/timeline/dialogs/TimelineHistoryDialog.nova',
+    ])
+    expect(result.code).toContain('type:__NovaUIKit.Dialogs')
+    expect(result.code).toContain('definitions:[{type:"history"')
+    expect(result.code).toContain('text:String(slot.value ?? \'\')')
+    expect(result.code).not.toContain("import Dialogs from './ui/layout/Dialogs.nova'")
+  })
+
   it('keeps large Tooltips registry compile path under budget', () => {
     const definitions = Array.from({ length: 200 }, (_item, index) => `
       <Tooltip type="status-${index}" :width="${180 + (index % 5) * 10}">
@@ -1118,6 +1177,12 @@ describe('Nova SFC compiler', () => {
             from-port="right.middle"
             :elbow="{ mode: 'ratio', value: 0.62 }"
           />
+          <TimelineChart.BackgroundProfile
+            id="shift"
+            fill="rgba(125, 181, 255, 0.18)"
+            :inset-y="5"
+            :opacity="0.75"
+          />
         </TimelineChart.Root>
       </template>
     `)
@@ -1137,8 +1202,12 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('handleFill:"rgba(29, 115, 255, 0.28)"')
     expect(result.code).toContain('pattern:"solid"')
     expect(result.code).toContain('routing:{type:"orthogonal",fromPort:"right.middle",elbow:{ mode: \'ratio\', value: 0.62 }}')
+    expect(result.code).toContain('backgroundProfiles:{shift:{recipe:{rects:[{id:\'body\'')
+    expect(result.code).toContain('color:"rgba(125, 181, 255, 0.18)"')
+    expect(result.code).toContain('opacity:0.75')
     expect(result.code).not.toContain('type:"TimelineChart.PointProfile"')
     expect(result.code).not.toContain('type:"TimelineChart.LinkProfile"')
+    expect(result.code).not.toContain('type:"TimelineChart.BackgroundProfile"')
   })
 
   it('compiles Scenes and Scene DSL tags to core Nova scene schema types', () => {

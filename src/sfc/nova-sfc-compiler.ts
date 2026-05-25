@@ -628,6 +628,16 @@ function compileScriptSetup(source: string, diagnostics: Array<NovaUiStyleDiagno
   }
 }
 
+function mergeSchemaComponents(
+  parent: Map<string, ScriptSetupImportBinding> | undefined,
+  local: Map<string, ScriptSetupImportBinding>,
+): Map<string, ScriptSetupImportBinding> {
+  if (!parent?.size) return local
+  if (!local.size) return parent
+
+  return new Map([...parent, ...local])
+}
+
 function resolveImportedName(specifier: any): string {
   if (specifier.type === 'ImportDefaultSpecifier') return 'default'
   if (specifier.type === 'ImportNamespaceSpecifier') return '*'
@@ -1315,9 +1325,12 @@ function resolveTemplateIncludeRequest(
     return []
   }
 
+  const includeSetup = compileScriptSetup(sfc.descriptor.scriptSetup?.content ?? '', diagnostics)
+
   return parseTemplate(sfc.descriptor.template.content, diagnostics, 0, {
     ...options,
     filename,
+    schemaComponents: mergeSchemaComponents(options.schemaComponents, includeSetup.importBindings),
     includeStack: [...(options.includeStack ?? []), includeKey],
   })
 }
@@ -1392,9 +1405,12 @@ function resolveTemplateIncludeRequestFragment(
     return { children: [], slots: {} }
   }
 
+  const includeSetup = compileScriptSetup(sfc.descriptor.scriptSetup?.content ?? '', diagnostics)
+
   return parseTemplateFragment(sfc.descriptor.template.content, diagnostics, baseOffset, {
     ...options,
     filename,
+    schemaComponents: mergeSchemaComponents(options.schemaComponents, includeSetup.importBindings),
     includeStack: [...(options.includeStack ?? []), includeKey],
   })
 }
@@ -3423,18 +3439,18 @@ function generateTimelineLinkProfileEntry(node: TemplateNode): string {
 function generateTimelineBackgroundProfileEntry(node: TemplateNode): string {
   const id = readAttr(node, 'id') ?? 'default'
   const fill = timelineRecipeValue(node, ['fill', 'background'])
+  const opacity = timelineRecipeValue(node, ['opacity'])
   const radius = timelineRecipeValue(node, ['radius'])
+  const insetY = timelineRecipeValue(node, ['inset-y', 'insetY']) ?? '0'
   const borderColor = timelineRecipeValue(node, ['stroke', 'border-color', 'borderColor'])
   const borderWidth = timelineRecipeValue(node, ['stroke-width', 'strokeWidth', 'border-width', 'borderWidth'])
   const borderDash = timelineRecipeValue(node, ['dash', 'border-dash', 'borderDash'])
   const recipeEntries = [
-    fill ? `body:{rect:{background:${fill}${radius ? `,radius:${radius}` : ''}}}` : '',
+    fill
+      ? `rects:[{id:'body',x:ctx=>ctx.x,y:ctx=>ctx.y + (${insetY}),width:ctx=>ctx.width,height:ctx=>Math.max(0, (ctx.group?.innerHeight ?? ctx.height) - (${insetY}) * 2),color:${fill}${opacity ? `,opacity:${opacity}` : ''}${radius ? `,radius:${radius}` : ''}}]`
+      : '',
     borderColor || borderWidth || borderDash
-      ? `border:{rect:{border:{${[
-          borderColor ? `color:${borderColor}` : '',
-          borderWidth ? `width:${borderWidth}` : '',
-          borderDash ? `dash:${borderDash}` : '',
-        ].filter(Boolean).join(',')}}}}`
+      ? `borders:[{id:'border',x:ctx=>ctx.x,y:ctx=>ctx.y + (${insetY}),width:ctx=>ctx.width,height:ctx=>Math.max(0, (ctx.group?.innerHeight ?? ctx.height) - (${insetY}) * 2),color:${borderColor ?? "'transparent'"},widthPx:${borderWidth ?? '0'}${radius ? `,radius:${radius}` : ''}${borderDash ? `,dashPattern:${borderDash}` : ''}}]`
       : '',
   ].filter(Boolean)
 
