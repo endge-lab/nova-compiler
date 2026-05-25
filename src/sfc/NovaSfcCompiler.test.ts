@@ -121,6 +121,10 @@ describe('Nova SFC compiler', () => {
           <TextBlock else-if="props.pending" text="pending" />
           <TextBlock else text="empty" />
           <Button for="item in props.items" :key="item.id" :text="item.title" />
+          <template for="item in props.items">
+            <Button :key="'button-' + item.id" :text="item.title" />
+            <Surface :key="'surface-' + item.id" :width="32" />
+          </template>
           <Surface for="i in 5" :key="i" :x="i" />
         </Root>
       </template>
@@ -130,6 +134,7 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('(props.ready) ?')
     expect(result.code).toContain('(props.pending) ?')
     expect(result.code).toContain('__novaFor(props.items).flatMap((item, index)')
+    expect(result.code).not.toContain('__novaFor(props.items).flatMap((item, index) => [[{type:')
     expect(result.code).toContain('__novaFor(5).flatMap((i, index)')
   })
 
@@ -767,6 +772,7 @@ describe('Nova SFC compiler', () => {
 
     expect(result.diagnostics).toHaveLength(0)
     expect(result.code).toContain('__novaFor(visibleGroups).flatMap')
+    expect(result.code).not.toContain('__novaFor(visibleGroups).flatMap((group, index) => [[')
     expect(result.code).toContain('background:({"groupProjectBg":__novaSfcAssets.fills.groupProjectBg}[resolvePattern(group.item)] ?? undefined)')
   })
 
@@ -865,6 +871,43 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('type:"TimelineChart.GroupsPanel"')
     expect(result.code).not.toContain('type:"TimelineChart.GroupColumn"')
     expect(result.code).not.toContain("import GroupPanel from './groups/GroupPanel.nova'")
+  })
+
+  it('compiles TimelineChart.GroupColumn sorting metadata from DSL', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.GroupsPanel>
+            <TimelineChart.GroupColumn
+              id="readiness"
+              title="Готовность"
+              :width="88"
+              :value="group => group.readiness"
+              sortable
+              sort-default="desc"
+            >
+              <TimelineChart.GroupSortIndicator :size="13" color="#64748b" active-color="#2563eb" reserve-space />
+              <template #header="{ column, sort, x, y, width, height }">
+                <TextBlock :text="column.title" :x="x" :y="y" :width="width" :height="height" />
+                <Icon :if="sort.sortable" :icon="sort.indicator.idleIcon" :x="x + width - 13" :y="y" :width="13" :height="13" />
+              </template>
+            </TimelineChart.GroupColumn>
+          </TimelineChart.GroupsPanel>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledGroupColumns:[')
+    expect(result.code).toContain('id:"readiness"')
+    expect(result.code).toContain('title:"Готовность"')
+    expect(result.code).toContain('width:88')
+    expect(result.code).toContain('value:group => group.readiness')
+    expect(result.code).toContain('sortable:true')
+    expect(result.code).toContain('sortDefault:"desc"')
+    expect(result.code).toContain('sortIndicator:{')
+    expect(result.code).toContain('activeColor:"#2563eb"')
+    expect(result.code).toContain('const sort = ctx.sort;')
   })
 
   it('compiles TimelineChart.GridTemplate to a grid schema factory', () => {

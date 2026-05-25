@@ -303,7 +303,8 @@ const TIMELINE_PROFILE_MARKER_TAGS = new Set([
   'TimelineChart.LinkProfile',
 ])
 const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Icon', 'Text', 'TextBlock'])
-const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupColumn'])
+const TIMELINE_GROUP_SORT_INDICATOR_TAG = 'TimelineChart.GroupSortIndicator'
+const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupColumn', TIMELINE_GROUP_SORT_INDICATOR_TAG])
 const TIMELINE_MARKER_DSL_TAGS = new Set(['TimelineChart.Markers', 'TimelineChart.Marker'])
 const TIMELINE_GRID_TEMPLATE_TAG = 'TimelineChart.GridTemplate'
 const TIMELINE_MARQUEE_SELECTION_TAG = 'TimelineChart.MarqueeSelection'
@@ -2155,6 +2156,7 @@ function validateTemplateNodeList(
       && node.tag !== TIMELINE_MARQUEE_SELECTION_TAG
       && !isAssetDeclarationTag(node.tag)
       && !isAssetsContainerTag(node.tag)
+      && node.tag !== 'template'
       && !node.tag.includes('.')
       && !isComponentInclude
       && !isImportedComponent
@@ -2166,7 +2168,7 @@ function validateTemplateNodeList(
       })
     }
 
-    if (!isAssetDeclarationTag(node.tag) && !isAssetsContainerTag(node.tag) && readAttr(node, 'for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
+    if (node.tag !== 'template' && !isAssetDeclarationTag(node.tag) && !isAssetsContainerTag(node.tag) && readAttr(node, 'for') && !readAttr(node, ':key') && !readAttr(node, 'key')) {
       diagnostics.push({
         severity: 'error',
         code: 'missing-key',
@@ -2312,12 +2314,20 @@ function generateNodeList(node: TemplateNode, context: GenerateContext, isTopLev
   if (forSource) {
     const parsed = parseForExpression(forSource)
     if (parsed) {
-      const schema = generateSchema(node, context, isTopLevelRoot)
-      return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => [${schema}])`
+      const schema = node.tag === 'template'
+        ? generateNodeSequence(node.children, context)
+        : generateSchema(node, context, isTopLevelRoot)
+      return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => ${flatMapReturnExpression(schema)})`
     }
   }
 
+  if (node.tag === 'template') return generateNodeSequence(node.children, context)
+
   return generateSchema(node, context, isTopLevelRoot)
+}
+
+function flatMapReturnExpression(code: string): string {
+  return code.trimStart().startsWith('{') ? `(${code})` : code
 }
 
 function generateNodeArray(node: TemplateNode, context: GenerateContext, isTopLevelRoot: boolean): string {
@@ -2349,6 +2359,9 @@ function generateSchema(
   const timelineVisualProfiles = isTimelineRootTag(node)
     ? generateTimelineVisualProfilesProp(node.children)
     : ''
+  const timelineGroupColumns = isTimelineRootTag(node)
+    ? generateTimelineGroupColumnsProp(node.children, context)
+    : ''
   const timelineGroupColumnTemplates = isTimelineRootTag(node)
     ? generateTimelineGroupColumnTemplatesProp(node.children, context)
     : ''
@@ -2370,6 +2383,7 @@ function generateSchema(
   const props = [
     timelineTaskProfiles,
     timelineVisualProfiles,
+    timelineGroupColumns,
     timelineGroupColumnTemplates,
     timelineGroupPanelTemplate,
     timelineGroupPanelOverlayTemplate,
@@ -2520,6 +2534,12 @@ function generateTimelineVisualProfilesProp(nodes: Array<TemplateNode>): string 
   ].filter(Boolean)
 
   return `visualProfiles:{${sections.join(',')}}`
+}
+
+function generateTimelineGroupColumnsProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const columns = collectTimelineGroupColumnNodes(nodes)
+  if (columns.length === 0) return ''
+  return `compiledGroupColumns:${generateTimelineGroupColumns(columns, context)}`
 }
 
 function generateTimelineGroupColumnTemplatesProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
@@ -2834,6 +2854,23 @@ function validateTimelineGroupColumnNodes(
       }
     }
 
+    for (const child of node.children) {
+      if (child.tag !== TIMELINE_GROUP_SORT_INDICATOR_TAG && child.tag !== 'template') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-group-column-child',
+          message: 'TimelineChart.GroupColumn поддерживает только #cell, #header, <template src> и TimelineChart.GroupSortIndicator.',
+        })
+      }
+      if (child.tag === TIMELINE_GROUP_SORT_INDICATOR_TAG && (child.children.length > 0 || Object.keys(child.slots).length > 0)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-group-sort-indicator-child',
+          message: 'TimelineChart.GroupSortIndicator не поддерживает children или slots.',
+        })
+      }
+    }
+
     validateTimelineGroupColumnSchemaChildren(node.slots.cell?.children ?? [], diagnostics)
     validateTimelineGroupColumnSchemaChildren(node.slots.header?.children ?? [], diagnostics)
   }
@@ -2859,6 +2896,99 @@ function validateTimelineGroupColumnSchemaChildren(
     }
     validateTimelineGroupColumnSchemaChildren(node.children, diagnostics)
   }
+}
+
+function generateTimelineGroupColumns(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  return `[${nodes.map(node => generateTimelineGroupColumnDefinition(node, context)).join(',')}]`
+}
+
+function generateTimelineGroupColumnDefinition(node: TemplateNode, context: GenerateContext): string {
+  const id = readAttr(node, 'id') ?? ''
+  const sortCompare = readDslAttrExpression(node, 'sort-compare') ?? readDslAttrExpression(node, 'sortCompare')
+  const sortCycle = readDslAttrExpression(node, 'sort-cycle') ?? readDslAttrExpression(node, 'sortCycle')
+  const sortable = readDslAttrExpression(node, 'sortable')
+  const value = readDslAttrExpression(node, 'value')
+    ?? readDslAttrExpression(node, 'sort-value')
+    ?? readDslAttrExpression(node, 'sortValue')
+  const sortObjectEntries = [
+    value ? `value:${value}` : '',
+    sortCompare ? `compare:${sortCompare}` : '',
+    sortCycle ? `cycle:${sortCycle}` : '',
+  ].filter(Boolean)
+  const entries = [
+    `id:${serializeStaticAttr(id)}`,
+    timelineGroupColumnEntry(node, 'title'),
+    timelineGroupColumnEntry(node, 'width'),
+    timelineGroupColumnEntry(node, 'data'),
+    value ? `value:${value}` : '',
+    sortObjectEntries.length > 1 || sortCompare || sortCycle
+      ? `sortable:{${sortObjectEntries.join(',')}}`
+      : sortable
+        ? `sortable:${sortable}`
+        : value
+          ? 'sortable:true'
+          : '',
+    timelineGroupColumnEntry(node, 'sort-default', 'sortDefault') || timelineGroupColumnEntry(node, 'sortDefault'),
+    generateTimelineGroupSortIndicatorEntry(node, context),
+  ].filter(Boolean)
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineGroupSortIndicatorEntry(node: TemplateNode, context: GenerateContext): string {
+  const indicatorNode = node.children.find(child => child.tag === TIMELINE_GROUP_SORT_INDICATOR_TAG)
+  if (!indicatorNode) return ''
+  const entries = [
+    timelineGroupSortIndicatorIconEntry(indicatorNode, context, 'idle-icon', 'idleIcon'),
+    timelineGroupSortIndicatorIconEntry(indicatorNode, context, 'asc-icon', 'ascIcon'),
+    timelineGroupSortIndicatorIconEntry(indicatorNode, context, 'desc-icon', 'descIcon'),
+    timelineGroupColumnEntry(indicatorNode, 'size'),
+    timelineGroupColumnEntry(indicatorNode, 'color'),
+    timelineGroupColumnEntry(indicatorNode, 'active-color', 'activeColor') || timelineGroupColumnEntry(indicatorNode, 'activeColor'),
+    timelineGroupColumnEntry(indicatorNode, 'opacity'),
+    timelineGroupColumnEntry(indicatorNode, 'active-opacity', 'activeOpacity') || timelineGroupColumnEntry(indicatorNode, 'activeOpacity'),
+    timelineGroupColumnEntry(indicatorNode, 'placement'),
+    timelineGroupColumnEntry(indicatorNode, 'reserve-space', 'reserveSpace') || timelineGroupColumnEntry(indicatorNode, 'reserveSpace'),
+  ].filter(Boolean)
+  return entries.length > 0 ? `sortIndicator:{${entries.join(',')}}` : ''
+}
+
+function timelineGroupSortIndicatorIconEntry(
+  node: TemplateNode,
+  context: GenerateContext,
+  name: string,
+  targetName: string,
+): string {
+  const dynamic = readAttr(node, `:${name}`) ?? readAttr(node, `:${normalizeDslPropName(name)}`)
+  if (dynamic !== undefined) return `${quoteKey(targetName)}:${dynamic}`
+
+  const staticValue = readAttr(node, name) ?? readAttr(node, normalizeDslPropName(name))
+  if (staticValue === undefined) return ''
+  if (isAssetPath(staticValue)) {
+    return `${quoteKey(targetName)}:${registerPathAsset(context, { request: staticValue, from: node.filename })}`
+  }
+  return `${quoteKey(targetName)}:${serializeStaticAttr(staticValue)}`
+}
+
+function timelineGroupColumnEntry(node: TemplateNode, name: string, targetName = normalizeDslPropName(name)): string {
+  const value = readDslAttrExpression(node, name)
+  return value ? `${quoteKey(targetName)}:${value}` : ''
+}
+
+function readDslAttrExpression(node: TemplateNode, name: string): string | undefined {
+  const normalizedName = normalizeDslPropName(name)
+  const dynamic = readAttr(node, `:${name}`) ?? readAttr(node, `:${normalizedName}`)
+  if (dynamic !== undefined) return dynamic
+  const staticValue = readAttr(node, name) ?? readAttr(node, normalizedName)
+  if (staticValue !== undefined) {
+    if ((name === 'width' || name === 'size') && /^-?\d+(?:\.\d+)?$/.test(staticValue)) {
+      return staticValue
+    }
+    return serializeStaticAttr(staticValue)
+  }
+  if (Object.prototype.hasOwnProperty.call(node.attrs, name) || Object.prototype.hasOwnProperty.call(node.attrs, normalizedName)) {
+    return 'true'
+  }
+  return undefined
 }
 
 function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, context: GenerateContext): string {
@@ -2891,6 +3021,7 @@ function generateTimelineGroupColumnTemplates(nodes: Array<TemplateNode>, contex
           const y = ctx.y;
           const width = ctx.width;
           const height = ctx.height;
+          const sort = ctx.sort;
           const api = ctx.api;
           const chart = ctx.chart;
           return ${generateTimelineGroupColumnSchemaSequence(headerSlot.children, context)};
@@ -3147,7 +3278,8 @@ function generateTimelineGroupColumnSchemaNode(node: TemplateNode, context: Gene
     delete attrs.for
     delete attrs[':for']
 
-    return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => [${generateTimelineGroupColumnSchemaNode({ ...node, attrs }, context)}])`
+    const schema = generateTimelineGroupColumnSchemaNode({ ...node, attrs }, context)
+    return `__novaFor(${parsed.source}).flatMap((${parsed.item}, ${parsed.index}) => ${flatMapReturnExpression(schema)})`
   }
 
   const condition = readAttr(node, 'if')
