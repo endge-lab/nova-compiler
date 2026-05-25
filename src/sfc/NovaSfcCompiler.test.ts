@@ -943,6 +943,7 @@ describe('Nova SFC compiler', () => {
       <template>
         <Root>
           <Button @click="clickHandler" @press="pressHandler" />
+          <SearchInput @value-change="valueHandler" @search="valueHandler" />
           <Slider @value-change="valueHandler" @drag-start="valueHandler" />
           <ScrollArea @scroll-end="scrollEndHandler" />
           <SplitPane @resize-start="resizeStartHandler" />
@@ -957,6 +958,7 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('events:{click:clickHandler}')
     expect(result.code).toContain('onPress:pressHandler')
     expect(result.code).toContain('onValueChange:valueHandler')
+    expect(result.code).toContain('onSearch:valueHandler')
     expect(result.code).toContain('onDragStart:valueHandler')
     expect(result.code).toContain('onScrollEnd:scrollEndHandler')
     expect(result.code).toContain('onResizeStart:resizeStartHandler')
