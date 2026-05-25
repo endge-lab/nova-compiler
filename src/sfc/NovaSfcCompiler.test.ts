@@ -291,6 +291,68 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain("import Tooltips from './ui/layout/tooltip/Tooltips.nova'")
   })
 
+  it('compiles Overlays registry definitions with implicit slot context', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Overlays>
+            <Overlay type="task-menu" kind="menu" :width="220" :height="112" placement="bottom-start">
+              <ActionList
+                :items="slot.items"
+                :on-action="slot.close"
+              />
+            </Overlay>
+            <Overlay type="inspector" kind="panel" placement="right-start" />
+          </Overlays>
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('type:__NovaUIKit.Overlays')
+    expect(result.code).toContain('definitions:[{type:"task-menu"')
+    expect(result.code).toContain('slot:(slot = {}) =>')
+    expect(result.code).toContain('items:slot.items')
+    expect(result.code).toContain('onAction:slot.close')
+    expect(result.code).toContain('kind:"panel"')
+  })
+
+  it('inlines Overlays.nova fragments through nova:schema', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import Overlays from './ui/layout/Overlays.nova'
+      </script>
+
+      <template>
+        <Root>
+          <Overlays nova:schema />
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './ui/layout/Overlays.nova'
+        ? {
+            filename: '/demo/ui/layout/Overlays.nova',
+            source: `
+              <template>
+                <Overlays>
+                  <Overlay type="default" :width="220">
+                    <TextBlock :text="String(slot.value)" />
+                  </Overlay>
+                </Overlays>
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/ui/layout/Overlays.nova'])
+    expect(result.code).toContain('type:__NovaUIKit.Overlays')
+    expect(result.code).toContain('text:String(slot.value)')
+    expect(result.code).not.toContain("import Overlays from './ui/layout/Overlays.nova'")
+  })
+
   it('resolves nested nova:schema imports from included fragments', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">
