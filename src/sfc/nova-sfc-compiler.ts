@@ -190,6 +190,7 @@ const UI_KIT_TAGS = new Set([
   'Dialog',
   'Drawer',
   'Popover',
+  'ActionList',
   'Toast',
   'Message',
   'BlockUI',
