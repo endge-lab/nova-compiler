@@ -203,7 +203,7 @@ const UI_KIT_TAGS = new Set([
 ])
 const ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.woff', '.woff2', '.ttf', '.otf'])
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'])
-const ASSET_PATH_PROPS = new Set(['src', 'source', 'icon', 'background'])
+const ASSET_PATH_PROPS = new Set(['src', 'source', 'icon', 'trailingIcon', 'background'])
 const ASSET_OPTION_PROPS = new Set(['asset-color', 'assetColor'])
 const ASSETS_CONTAINER_TAG = 'Nova.Assets'
 const LEGACY_ASSET_DECLARATION_TAGS = new Set(['StripePattern'])
