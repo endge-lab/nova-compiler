@@ -317,6 +317,57 @@ describe('Nova SFC compiler', () => {
     console.info(`[bench] nova-compiler:tooltips-large elapsed=${elapsed.toFixed(2)}ms budget=1500ms definitions=200 targets=1000`)
   })
 
+  it('compiles Dialogs registry definitions with implicit slot context', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Dialogs>
+            <Dialog type="confirm" :width="420" :height="240" placement="center">
+              <Flex direction="column" :gap="8">
+                <TextBlock :text="slot.title" />
+                <TextBlock :text="String(slot.value)" />
+                <Button text="Close" :on-press="slot.close" />
+              </Flex>
+            </Dialog>
+            <Dialog type="drawer" :width="360" placement="right" :draggable="true" />
+          </Dialogs>
+        </Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('type:__NovaUIKit.Dialogs')
+    expect(result.code).toContain('definitions:[{type:"confirm"')
+    expect(result.code).toContain('slot:(slot = {}) =>')
+    expect(result.code).toContain('text:slot.title')
+    expect(result.code).toContain('text:String(slot.value)')
+    expect(result.code).toContain('onPress:slot.close')
+    expect(result.code).toContain('placement:"right"')
+  })
+
+  it('keeps large Dialogs registry compile path under budget', () => {
+    const definitions = Array.from({ length: 120 }, (_item, index) => `
+      <Dialog type="flow-${index}" :width="${360 + (index % 4) * 20}" :height="220">
+        <TextBlock :text="slot.title + ': ' + slot.value" />
+      </Dialog>
+    `).join('\n')
+    const startedAt = performance.now()
+    const result = compileNovaSfc(`
+      <template>
+        <Root>
+          <Dialogs>${definitions}</Dialogs>
+        </Root>
+      </template>
+    `)
+    const elapsed = performance.now() - startedAt
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('definitions:[{type:"flow-0"')
+    expect(result.code).toContain('type:"flow-119"')
+    expect(elapsed).toBeLessThan(1_000)
+    console.info(`[bench] nova-compiler:dialogs-large elapsed=${elapsed.toFixed(2)}ms budget=1000ms definitions=120`)
+  })
+
   it('reports invalid nova:schema usage', () => {
     const result = compileNovaSfc(`
       <script setup lang="ts">

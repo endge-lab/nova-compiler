@@ -171,6 +171,7 @@ const UI_KIT_TAGS = new Set([
   'Toggle',
   'Tooltip',
   'Tooltips',
+  'Dialogs',
   'SegmentedControl',
   'Panel',
   'SpeedDial',
@@ -338,6 +339,7 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Toggle: 'packages/@endge-nova-ui-kit/src/components/Toggle/Toggle.ts',
   Tooltip: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltip.ts',
   Tooltips: 'packages/@endge-nova-ui-kit/src/components/Tooltip/Tooltips.ts',
+  Dialogs: 'packages/@endge-nova-ui-kit/src/components/Dialog/Dialogs.ts',
   SegmentedControl: 'packages/@endge-nova-ui-kit/src/components/SegmentedControl/SegmentedControl.ts',
   Panel: 'packages/@endge-nova-ui-kit/src/components/Panel/Panel.ts',
 }
@@ -2316,6 +2318,7 @@ function generateSchema(
 ): string {
   if (node.tag === 'slot') return generateSlotOutlet(node, context)
   if (node.tag === 'Tooltips') return generateTooltipsSchema(node, context, isTopLevelRoot)
+  if (node.tag === 'Dialogs') return generateDialogsSchema(node, context, isTopLevelRoot)
 
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
@@ -3795,6 +3798,36 @@ function generateTooltipsSchema(
 }
 
 function generateTooltipDefinition(node: TemplateNode, context: GenerateContext): string {
+  const typeExpression = readAttr(node, ':type')
+    ?? (readAttr(node, 'type') ? JSON.stringify(readAttr(node, 'type')) : JSON.stringify('default'))
+  const props = generateProps(node, context, false, false) || '{}'
+  const slot = node.children.length > 0
+    ? `,slot:(slot = {}) => { return ${generateNodeSequence(node.children, context)}; }`
+    : ''
+  return `{type:${typeExpression},props:${props}${slot}}`
+}
+
+function generateDialogsSchema(
+  node: TemplateNode,
+  context: GenerateContext,
+  isTopLevelRoot: boolean,
+): string {
+  const definitions = node.children
+    .filter(child => child.tag === 'Dialog')
+    .map(child => generateDialogDefinition(child, context))
+  const props = mergePropsCode(
+    generateProps(node, context, false, isTopLevelRoot),
+    `definitions:[${definitions.join(',')}]`,
+  )
+  const id = readAttr(node, ':id')
+    ? `id:${readAttr(node, ':id')}`
+    : readAttr(node, 'id')
+      ? `id:${JSON.stringify(readAttr(node, 'id'))}`
+      : ''
+  return `{type:__NovaUIKit.Dialogs,${id ? `${id},` : ''}props:${props}}`
+}
+
+function generateDialogDefinition(node: TemplateNode, context: GenerateContext): string {
   const typeExpression = readAttr(node, ':type')
     ?? (readAttr(node, 'type') ? JSON.stringify(readAttr(node, 'type')) : JSON.stringify('default'))
   const props = generateProps(node, context, false, false) || '{}'
