@@ -304,6 +304,7 @@ const TIMELINE_PROFILE_PRIMITIVE_TAGS = new Set(['Rect', 'Icon', 'Text', 'TextBl
 const TIMELINE_GROUP_MARKER_TAGS = new Set(['TimelineChart.GroupColumn'])
 const TIMELINE_MARKER_DSL_TAGS = new Set(['TimelineChart.Markers', 'TimelineChart.Marker'])
 const TIMELINE_GRID_TEMPLATE_TAG = 'TimelineChart.GridTemplate'
+const TIMELINE_MARQUEE_SELECTION_TAG = 'TimelineChart.MarqueeSelection'
 const TIMELINE_GROUP_SCHEMA_TAGS = new Set(['Rect', 'Line', 'Circle', 'Icon', 'Text', 'TextBlock', 'ProgressRing'])
 const CORE_DSL_TAGS: Record<string, string> = {
   Scenes: 'nova.scenes',
@@ -776,6 +777,10 @@ function convertTemplateChild(
       return resolveTemplateInclude(element, diagnostics, options)
     }
 
+    if (isControlTemplateElement(element)) {
+      return [convertControlTemplateElement(element, diagnostics, baseOffset, options)]
+    }
+
     diagnostics.push({
       severity: 'error',
       code: 'orphan-slot-template',
@@ -840,6 +845,11 @@ function convertElementChildren(
         continue
       }
 
+      if (!isSlotTemplate(template) && isControlTemplateElement(template)) {
+        children.push(convertControlTemplateElement(template, diagnostics, baseOffset, options))
+        continue
+      }
+
       const slot = convertSlotTemplate(template, diagnostics, baseOffset, options)
       if (slot) {
         if (slots[slot.name]) {
@@ -879,6 +889,40 @@ function convertElementChildren(
   }
 
   return { children, slots }
+}
+
+function isControlTemplateElement(element: ElementNode): boolean {
+  return element.props.some(prop => {
+    if (prop.type === NodeTypes.ATTRIBUTE) {
+      return isControlFlowAttr(prop.name)
+    }
+
+    const directive = prop as DirectiveNode
+    const arg = directive.arg && directive.arg.type === NodeTypes.SIMPLE_EXPRESSION
+      ? directive.arg.content
+      : ''
+
+    return directive.name === 'bind' && isControlFlowAttr(`:${arg}`)
+  })
+}
+
+function convertControlTemplateElement(
+  element: ElementNode,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  baseOffset: number,
+  options: TemplateParseOptions,
+): TemplateNode {
+  const nested = convertElementChildren(element, diagnostics, baseOffset, options)
+  return {
+    tag: 'template',
+    filename: options.filename,
+    attrs: collectElementAttrs(element, diagnostics),
+    attrRanges: collectElementAttrRanges(element, baseOffset),
+    range: toSourceRange(element, baseOffset),
+    tagRange: toTagSourceRange(element, baseOffset),
+    children: nested.children,
+    slots: nested.slots,
+  }
 }
 
 function convertSlotTemplate(
@@ -2088,6 +2132,7 @@ function validateTemplateNodeList(
       && !TIMELINE_GROUP_MARKER_TAGS.has(node.tag)
       && !TIMELINE_MARKER_DSL_TAGS.has(node.tag)
       && node.tag !== TIMELINE_GRID_TEMPLATE_TAG
+      && node.tag !== TIMELINE_MARQUEE_SELECTION_TAG
       && !isAssetDeclarationTag(node.tag)
       && !isAssetsContainerTag(node.tag)
       && !node.tag.includes('.')
@@ -2173,6 +2218,12 @@ function validateTemplateNodeList(
 
     if (node.tag === TIMELINE_GRID_TEMPLATE_TAG) {
       validateTimelineGridTemplateNodes([node], diagnostics)
+      previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
+      continue
+    }
+
+    if (node.tag === TIMELINE_MARQUEE_SELECTION_TAG) {
+      validateTimelineMarqueeSelectionNodes([node], diagnostics)
       previousAcceptsElse = !!readAttr(node, 'if') || !!readAttr(node, 'else-if')
       continue
     }
@@ -2266,7 +2317,7 @@ function generateSchema(
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
+    ? node.children.filter(child => !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isTimelineMarqueeSelectionNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
     : isTimelineGroupsPanelTag(node)
       ? node.children.filter(child => !isTimelineGroupsPanelTemplateChild(child))
       : node.children
@@ -2291,6 +2342,9 @@ function generateSchema(
   const timelineGridTemplate = isTimelineRootTag(node)
     ? generateTimelineGridTemplateProp(node.children, context)
     : ''
+  const timelineMarqueeSelection = isTimelineRootTag(node)
+    ? generateTimelineMarqueeSelectionProp(node.children, context)
+    : ''
   const props = [
     timelineTaskProfiles,
     timelineVisualProfiles,
@@ -2299,6 +2353,7 @@ function generateSchema(
     timelineGroupPanelOverlayTemplate,
     timelineMarkers,
     timelineGridTemplate,
+    timelineMarqueeSelection,
   ].reduce(
     (base, extra) => mergePropsCode(base, extra),
     generateProps(node, context, isCompiledComponent, isTopLevelRoot),
@@ -2475,6 +2530,12 @@ function generateTimelineGridTemplateProp(nodes: Array<TemplateNode>, context: G
   return `compiledGridTemplate:${generateTimelineGridTemplate(gridTemplate.children, context)}`
 }
 
+function generateTimelineMarqueeSelectionProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
+  const marqueeSelection = collectTimelineMarqueeSelectionNodes(nodes)[0]
+  if (!marqueeSelection) return ''
+  return `compiledMarqueeSelection:${generateTimelineMarqueeSelectionConfig(marqueeSelection, context)}`
+}
+
 function mergePropsCode(base: string, extra: string): string {
   if (!extra) return base
   if (!base) return `{${extra}}`
@@ -2506,6 +2567,10 @@ function isTimelineMarkerTemplateNode(node: TemplateNode): boolean {
 
 function isTimelineGridTemplateNode(node: TemplateNode): boolean {
   return node.tag === TIMELINE_GRID_TEMPLATE_TAG
+}
+
+function isTimelineMarqueeSelectionNode(node: TemplateNode): boolean {
+  return node.tag === TIMELINE_MARQUEE_SELECTION_TAG
 }
 
 function collectTimelineGroupColumnNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
@@ -2568,6 +2633,21 @@ function collectTimelineGridTemplateNodes(nodes: Array<TemplateNode>): Array<Tem
   return result
 }
 
+function collectTimelineMarqueeSelectionNodes(nodes: Array<TemplateNode>): Array<TemplateNode> {
+  const result: Array<TemplateNode> = []
+  for (const node of nodes) {
+    if (node.tag === TIMELINE_MARQUEE_SELECTION_TAG) {
+      result.push(node)
+      continue
+    }
+    result.push(...collectTimelineMarqueeSelectionNodes(node.children))
+    for (const slot of Object.values(node.slots)) {
+      result.push(...collectTimelineMarqueeSelectionNodes(slot.children))
+    }
+  }
+  return result
+}
+
 function validateTimelineGridTemplateNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
@@ -2590,6 +2670,33 @@ function validateTimelineGridTemplateNodes(
     }
 
     validateTimelineGroupColumnSchemaChildren(node.children, diagnostics)
+  }
+}
+
+function validateTimelineMarqueeSelectionNodes(
+  nodes: Array<TemplateNode>,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+): void {
+  for (const node of nodes) {
+    if (node.children.length > 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'timeline-marquee-selection-child',
+        message: 'TimelineChart.MarqueeSelection поддерживает только slot #box.',
+      })
+    }
+
+    for (const slotName of Object.keys(node.slots)) {
+      if (slotName !== 'box') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'timeline-marquee-selection-slot',
+          message: 'TimelineChart.MarqueeSelection поддерживает только #box.',
+        })
+      }
+    }
+
+    validateTimelineGroupColumnSchemaChildren(node.slots.box?.children ?? [], diagnostics)
   }
 }
 
@@ -2715,6 +2822,11 @@ function validateTimelineGroupColumnSchemaChildren(
   diagnostics: Array<NovaUiStyleDiagnostic>,
 ): void {
   for (const node of nodes) {
+    if (node.tag === 'template') {
+      validateTimelineGroupColumnSchemaChildren(node.children, diagnostics)
+      continue
+    }
+
     if (!TIMELINE_GROUP_SCHEMA_TAGS.has(node.tag)) {
       diagnostics.push({
         severity: 'error',
@@ -2800,6 +2912,50 @@ function generateTimelineGridTemplate(nodes: Array<TemplateNode>, context: Gener
     const chart = ctx.chart;
     const store = ctx.store;
     return ${generateTimelineGroupColumnSchemaSequence(nodes, context)};
+  }`
+}
+
+function generateTimelineMarqueeSelectionConfig(node: TemplateNode, context: GenerateContext): string {
+  const entries: Array<string> = []
+
+  for (const [attr, target] of [
+    ['id', 'id'],
+    ['enabled', 'enabled'],
+    ['controller', 'controller'],
+    ['mode', 'mode'],
+    ['hitMode', 'hitMode'],
+    ['hit-mode', 'hitMode'],
+    ['minDragPx', 'minDragPx'],
+    ['min-drag-px', 'minDragPx'],
+    ['style', 'style'],
+    ['layer', 'layer'],
+    ['once', 'once'],
+  ] as const) {
+    const value = readTimelineMarkerAttr(node, attr)
+    if (value && !entries.some(entry => entry.startsWith(`${target}:`) || entry.startsWith(`${quoteKey(target)}:`))) {
+      entries.push(`${target}:${value}`)
+    }
+  }
+
+  const renderBox = generateTimelineMarqueeSelectionSlotRenderer(node, context)
+  if (renderBox) entries.push(renderBox)
+
+  return `{${entries.join(',')}}`
+}
+
+function generateTimelineMarqueeSelectionSlotRenderer(node: TemplateNode, context: GenerateContext): string {
+  const slot = node.slots.box
+  if (!slot) return ''
+
+  return `renderBox:(__timelineMarqueeSelection) => {
+    const ctx = __timelineMarqueeSelection;
+    const rect = ctx.rect;
+    const style = ctx.style;
+    const defaultRender = ctx.defaultRender;
+    const api = ctx.api;
+    const chart = ctx.chart;
+    const store = ctx.store;
+    return ${generateTimelineGroupColumnSchemaSequence(slot.children, context)};
   }`
 }
 
@@ -2973,6 +3129,11 @@ function generateTimelineGroupColumnSchemaNode(node: TemplateNode, context: Gene
   }
 
   const condition = readAttr(node, 'if')
+  if (node.tag === 'template') {
+    const schema = generateTimelineGroupColumnSchemaSequence(node.children, context)
+    return condition ? `((${condition}) ? ${schema} : [])` : schema
+  }
+
   const schema = generateTimelineGroupColumnSchema(node, context)
   return condition ? `((${condition}) ? ${schema} : null)` : schema
 }
@@ -3113,11 +3274,19 @@ function groupCommonEntries(node: TemplateNode): Array<string> {
 }
 
 function groupStyleEntry(node: TemplateNode, name: string): string {
+  const staticThemeToken = groupStaticThemeTokenAttr(node, name)
+  if (staticThemeToken) return `${quoteKey(name)}:${staticThemeToken}`
+
   const value = groupAttr(node, name)
   return value ? `${quoteKey(name)}:${value}` : ''
 }
 
 function groupBackgroundStyleEntry(node: TemplateNode, context: GenerateContext): string {
+  const dynamicFillPattern = readAttr(node, ':fill-pattern') ?? readAttr(node, ':fillPattern')
+  if (dynamicFillPattern) {
+    return `background:${generateDynamicLocalAssetRef(context, dynamicFillPattern, ['fill'])}`
+  }
+
   const fillPattern = readAttr(node, 'fill-pattern') ?? readAttr(node, 'fillPattern')
   if (fillPattern) {
     const ref = resolveLocalAssetRef(context, fillPattern, ['fill'])
@@ -3136,8 +3305,18 @@ function groupBackgroundStyleEntry(node: TemplateNode, context: GenerateContext)
   if (background && isAssetPath(background)) {
     return `background:${registerPathAsset(context, { request: background, from: node.filename })}`
   }
+  const themeTokenBackground = groupStaticThemeTokenAttr(node, 'background')
+  if (themeTokenBackground) return `background:${themeTokenBackground}`
 
   return groupStyleEntry(node, 'background')
+}
+
+function groupStaticThemeTokenAttr(node: TemplateNode, name: string): string {
+  const normalizedName = normalizeDslPropName(name)
+  if (readAttr(node, `:${name}`) !== undefined || readAttr(node, `:${normalizedName}`) !== undefined) return ''
+
+  const staticValue = readAttr(node, name) ?? readAttr(node, normalizedName)
+  return staticValue ? generateThemeTokenResolver(staticValue) : ''
 }
 
 function groupIconAttr(node: TemplateNode, context: GenerateContext): string {
@@ -3768,6 +3947,30 @@ function resolveLocalAssetRef(context: GenerateContext, name: string, kinds: Arr
   const local = context.assets.localRefs.get(name)
   if (!local || !kinds.includes(local.kind)) return ''
   return local.ref
+}
+
+function generateDynamicLocalAssetRef(context: GenerateContext, expression: string, kinds: Array<NovaAutoAssetKind>): string {
+  const entries = [...context.assets.localRefs.entries()]
+    .filter(([, local]) => kinds.includes(local.kind))
+    .map(([id, local]) => `${JSON.stringify(id)}:${local.ref}`)
+
+  return `({${entries.join(',')}}[${expression}] ?? undefined)`
+}
+
+function generateThemeTokenResolver(value: string): string {
+  const parsed = parseThemeTokenValue(value)
+  if (!parsed) return ''
+  const fallback = parsed.fallback ? `, ${JSON.stringify(parsed.fallback)}` : ''
+  return `api.resolveThemeToken(${JSON.stringify(parsed.name)}${fallback})`
+}
+
+function parseThemeTokenValue(value: string): { name: string; fallback: string } | null {
+  const match = value.trim().match(/^var\(\s*(--[\w-]+)\s*(?:,(.*))?\)$/s)
+  if (!match) return null
+  return {
+    name: match[1],
+    fallback: (match[2] ?? '').trim(),
+  }
 }
 
 function resolveStaticAssetPropTarget(tag: string, propName: string): string {

@@ -486,7 +486,7 @@ describe('Nova SFC compiler', () => {
         <TimelineChart.Root>
           <TimelineChart.GroupsPanel>
             <template #background="{ x, y, width, height, bodyY, bodyHeight, columnRects, visibleGroups, api }">
-              <Rect :x="x" :y="y" :width="width" :height="height" background="#fff" />
+              <Rect :x="x" :y="y" :width="width" :height="height" background="var(--groups-bg, #fff)" />
               <Rect
                 for="group in visibleGroups"
                 :x="x"
@@ -503,7 +503,7 @@ describe('Nova SFC compiler', () => {
                 :y1="y"
                 :x2="columnRect.x + columnRect.width - 1"
                 :y2="height"
-                :color="api.resolveThemeToken('--line', '#e7edf5')"
+                color="var(--line, #e7edf5)"
               />
             </template>
           </TimelineChart.GroupsPanel>
@@ -519,6 +519,96 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('const bodyHeight = ctx.bodyHeight')
     expect(result.code).toContain('__novaFor(visibleGroups)')
     expect(result.code).toContain('__novaFor(columnRects)')
+    expect(result.code).toContain('background:api.resolveThemeToken("--groups-bg", "#fff")')
+    expect(result.code).toContain('color:api.resolveThemeToken("--line", "#e7edf5")')
+  })
+
+  it('compiles dynamic fill patterns in TimelineChart.GroupsPanel background slots', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      function resolvePattern(group) {
+        return group.id === 'project' ? 'groupProjectBg' : ''
+      }
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <Nova.Assets>
+            <Nova.LinearGradient id="groupProjectBg" from="#dff3e7" to="#f6fff9" />
+          </Nova.Assets>
+          <TimelineChart.GroupsPanel>
+            <template #background="{ x, width, bodyY, bodyHeight, visibleGroups }">
+              <template for="group in visibleGroups">
+                <Rect
+                  :if="resolvePattern(group.item)"
+                  :x="x"
+                  :y="Math.max(group.y, bodyY)"
+                  :width="width"
+                  :height="Math.max(0, Math.min(group.y + group.height, bodyY + bodyHeight) - Math.max(group.y, bodyY))"
+                  :fill-pattern="resolvePattern(group.item)"
+                />
+              </template>
+            </template>
+          </TimelineChart.GroupsPanel>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('__novaFor(visibleGroups).flatMap')
+    expect(result.code).toContain('background:({"groupProjectBg":__novaSfcAssets.fills.groupProjectBg}[resolvePattern(group.item)] ?? undefined)')
+  })
+
+  it('resolves dynamic fill patterns from imported TimelineChart.GroupsPanel fragments', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      import GroupPanel from './groups/GroupPanel.nova'
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <Nova.Assets>
+            <Nova.LinearGradient id="groupProjectBg" from="#dff3e7" to="#f6fff9" />
+          </Nova.Assets>
+          <TimelineChart.GroupsPanel>
+            <GroupPanel nova:schema />
+          </TimelineChart.GroupsPanel>
+        </TimelineChart.Root>
+      </template>
+    `, {
+      filename: '/demo/App.nova',
+      resolveImport: request => request === './groups/GroupPanel.nova'
+        ? {
+            filename: '/demo/groups/GroupPanel.nova',
+            source: `
+              <script setup lang="ts">
+              function resolvePattern(group) {
+                return group.id === 'project' ? 'groupProjectBg' : ''
+              }
+              </script>
+
+              <template>
+                <template #background="{ x, width, bodyY, bodyHeight, visibleGroups }">
+                  <template for="group in visibleGroups">
+                    <Rect
+                      :if="resolvePattern(group.item)"
+                      :x="x"
+                      :y="Math.max(group.y, bodyY)"
+                      :width="width"
+                      :height="Math.max(0, Math.min(group.y + group.height, bodyY + bodyHeight) - Math.max(group.y, bodyY))"
+                      :fill-pattern="resolvePattern(group.item)"
+                    />
+                  </template>
+                </template>
+              </template>
+            `,
+          }
+        : null,
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.dependencies).toEqual(['/demo/groups/GroupPanel.nova'])
+    expect(result.code).toContain('background:({"groupProjectBg":__novaSfcAssets.fills.groupProjectBg}[resolvePattern(group.item)] ?? undefined)')
   })
 
   it('inlines imported nova:schema fragments inside TimelineChart.GroupsPanel', () => {
@@ -667,6 +757,82 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('renderBody:(__timelineMarker)')
     expect(result.code).toContain('renderLabel:(__timelineMarker)')
     expect(result.code).toContain('defaultValue:[{id:"today",kind:"today",renderBody:')
+  })
+
+  it('compiles TimelineChart.MarqueeSelection DSL to compiled marquee options', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const controller = {}
+      </script>
+
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.MarqueeSelection
+            :controller="controller"
+            mode="append"
+            hit-mode="contain"
+            :min-drag-px="8"
+            :style="{ fill: '#dbeafe', border: '#1d4ed8', borderWidth: 2, dash: [6, 3] }"
+            once
+          />
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('compiledMarqueeSelection:')
+    expect(result.code).toContain('controller:controller')
+    expect(result.code).toContain('mode:"append"')
+    expect(result.code).toContain('hitMode:"contain"')
+    expect(result.code).toContain('minDragPx:8')
+    expect(result.code).toContain('style:{ fill: \'#dbeafe\', border: \'#1d4ed8\', borderWidth: 2, dash: [6, 3] }')
+    expect(result.code).toContain('once:true')
+  })
+
+  it('compiles TimelineChart.MarqueeSelection box slot to renderBox', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.MarqueeSelection>
+            <template #box="{ rect, style, defaultRender, api, store }">
+              <Rect
+                :x="rect.x"
+                :y="rect.y"
+                :width="rect.width"
+                :height="rect.height"
+                :background="api.resolveThemeToken('--nova-timeline-marquee-fill', style.fill)"
+              />
+            </template>
+          </TimelineChart.MarqueeSelection>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('renderBox:(__timelineMarqueeSelection)')
+    expect(result.code).toContain('const rect = ctx.rect')
+    expect(result.code).toContain('const style = ctx.style')
+    expect(result.code).toContain('const defaultRender = ctx.defaultRender')
+    expect(result.code).toContain('const store = ctx.store')
+    expect(result.code).toContain('background:api.resolveThemeToken')
+  })
+
+  it('reports unsupported TimelineChart.MarqueeSelection children and slots', () => {
+    const result = compileNovaSfc(`
+      <template>
+        <TimelineChart.Root>
+          <TimelineChart.MarqueeSelection>
+            <TextBlock text="Wrong" />
+            <template #label>
+              <Rect :width="10" :height="10" />
+            </template>
+          </TimelineChart.MarqueeSelection>
+        </TimelineChart.Root>
+      </template>
+    `)
+
+    expect(result.diagnostics.map(diagnostic => diagnostic.code)).toContain('timeline-marquee-selection-child')
+    expect(result.diagnostics.map(diagnostic => diagnostic.code)).toContain('timeline-marquee-selection-slot')
   })
 
   it('compiles TimelineChart.Marker slot to renderMarker context', () => {
@@ -958,7 +1124,7 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('events:{click:clickHandler}')
     expect(result.code).toContain('onPress:pressHandler')
     expect(result.code).toContain('onValueChange:valueHandler')
-    expect(result.code).toContain('onSearch:valueHandler')
+    expect(result.code).toContain('events:{search:valueHandler}')
     expect(result.code).toContain('onDragStart:valueHandler')
     expect(result.code).toContain('onScrollEnd:scrollEndHandler')
     expect(result.code).toContain('onResizeStart:resizeStartHandler')
