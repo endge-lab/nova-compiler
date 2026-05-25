@@ -1048,6 +1048,10 @@ describe('Nova SFC compiler', () => {
             shape="diamond"
             :size="11"
             :fill="point => point.custom?.color ?? '#10b981'"
+            selected-fill="#1d73ff"
+            hovered-stroke="#93c5fd"
+            :editable="{ x: true, group: true }"
+            :ports="['center', 'top']"
             label-position="right"
             :label-offset="8"
             interaction="select-point"
@@ -1055,6 +1059,9 @@ describe('Nova SFC compiler', () => {
           <TimelineChart.LinkProfile
             id="trace"
             :stroke="link => link.custom?.color ?? '#10b981'"
+            selected-stroke="#1d73ff"
+            :selected-width="3"
+            handle-fill="rgba(29, 115, 255, 0.28)"
             pattern="solid"
             routing="orthogonal"
             from-port="right.middle"
@@ -1068,8 +1075,15 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('visualProfiles:{pointProfiles:{milestone:{recipe:{')
     expect(result.code).toContain('shape:"diamond"')
     expect(result.code).toContain("fill:point => point.custom?.color ?? '#10b981'")
+    expect(result.code).toContain('selectedFill:"#1d73ff"')
+    expect(result.code).toContain('hoveredStroke:"#93c5fd"')
+    expect(result.code).toContain('editable:{ x: true, group: true }')
+    expect(result.code).toContain("ports:['center', 'top']")
     expect(result.code).toContain('label:{text:point => point.label,position:"right",offset:8')
     expect(result.code).toContain('linkProfiles:{trace:{recipe:{')
+    expect(result.code).toContain('selectedStroke:"#1d73ff"')
+    expect(result.code).toContain('selectedWidth:3')
+    expect(result.code).toContain('handleFill:"rgba(29, 115, 255, 0.28)"')
     expect(result.code).toContain('pattern:"solid"')
     expect(result.code).toContain('routing:{type:"orthogonal",fromPort:"right.middle",elbow:{ mode: \'ratio\', value: 0.62 }}')
     expect(result.code).not.toContain('type:"TimelineChart.PointProfile"')
