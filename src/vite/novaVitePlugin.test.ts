@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Plugin } from 'vite'
 import { novaVitePlugin } from '@/vite/novaVitePlugin'
+import { timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
 
 const TEMP_DIRS: Array<string> = []
 
@@ -543,7 +544,7 @@ describe('Nova Vite plugin generated debug output', () => {
   })
 
   it('extracts TimelineTaskProfile children from public Vue TimelineChart', async () => {
-    const plugin = novaVitePlugin()
+    const plugin = novaVitePlugin({ extensions: [timelineChartNovaCompilerExtension()] })
 
     const result = await runTransform(
       plugin,
@@ -653,7 +654,7 @@ describe('Nova Vite plugin generated debug output', () => {
   })
 
   it('passes TimelineTaskProfile children to TimelineChart.Root inside NovaCanvas DSL', async () => {
-    const plugin = novaVitePlugin()
+    const plugin = novaVitePlugin({ extensions: [timelineChartNovaCompilerExtension()] })
 
     const result = await runTransform(
       plugin,
@@ -734,7 +735,7 @@ describe('Nova Vite plugin generated debug output', () => {
   })
 
   it('keeps TimelineChart.Root runtime children when extracting task profiles', async () => {
-    const plugin = novaVitePlugin()
+    const plugin = novaVitePlugin({ extensions: [timelineChartNovaCompilerExtension()] })
 
     const result = await runTransform(
       plugin,

@@ -16,6 +16,7 @@ import { compileNovaCss, serializeStyleAsset, type NovaCssCompileOptions } from 
 export interface NovaSfcCompileOptions extends NovaCssCompileOptions {
   filename?: string
   className?: string
+  extensions?: Array<NovaCompilerExtension>
 }
 
 export interface NovaSfcCompileResult {
@@ -54,21 +55,64 @@ export interface NovaSfcSourceMetadata {
   nodes: Array<NovaTemplateNodeMetadata>
 }
 
-interface TemplateNode {
+export interface NovaCompilerExtension {
+  name: string
+  sfc?: NovaSfcCompilerExtension
+  vue?: NovaVueCompilerExtension
+}
+
+export interface NovaVueCompilerExtension {
+  componentChildTransforms?: Array<NovaVueComponentChildTransform>
+}
+
+export interface NovaVueComponentChildTransform {
+  componentTag: string
+  childTag: string
+  compiledPropName: string
+  constPrefix: string
+  compile: (
+    source: string,
+    options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport' | 'extensions'>,
+  ) => {
+    code: string
+    diagnostics: Array<NovaUiStyleDiagnostic>
+    dependencies: Array<string>
+    imports?: Array<string>
+  }
+}
+
+export interface NovaSfcCompilerExtension {
+  generateNodeProps?: (input: NovaSfcExtensionNodeInput) => string | Array<string> | null | undefined
+  isNodeChildMarker?: (input: NovaSfcExtensionChildInput) => boolean
+  isKnownNode?: (input: NovaSfcExtensionNodeInput) => boolean
+}
+
+export interface NovaSfcExtensionNodeInput {
+  node: NovaSfcTemplateNode
+  context: NovaSfcGenerateContext
+}
+
+export interface NovaSfcExtensionChildInput {
+  parent: NovaSfcTemplateNode
+  child: NovaSfcTemplateNode
+  context: NovaSfcGenerateContext
+}
+
+export interface NovaSfcTemplateNode {
   tag: string
   filename?: string
   attrs: Record<string, string | true>
   attrRanges: Record<string, NovaSourceRange>
   range: NovaSourceRange
   tagRange: NovaSourceRange
-  children: Array<TemplateNode>
-  slots: Record<string, TemplateSlotNode>
+  children: Array<NovaSfcTemplateNode>
+  slots: Record<string, NovaSfcTemplateSlotNode>
 }
 
-interface TemplateSlotNode {
+export interface NovaSfcTemplateSlotNode {
   name: string
   scope?: string
-  children: Array<TemplateNode>
+  children: Array<NovaSfcTemplateNode>
 }
 
 interface TemplateParseOptions {
@@ -110,7 +154,7 @@ interface StyleCompileResult {
   diagnostics: Array<NovaUiStyleDiagnostic>
 }
 
-interface GenerateContext {
+export interface NovaSfcGenerateContext {
   diagnostics: Array<NovaUiStyleDiagnostic>
   importedRuntimeSymbols: Set<string>
   generatedImports: Array<string>
@@ -120,11 +164,16 @@ interface GenerateContext {
   filename?: string
   resolveImport?: NovaCssCompileOptions['resolveImport']
   dependencies?: Set<string>
+  extensions: Array<NovaCompilerExtension>
 }
 
-type NovaAutoAssetKind = 'icon' | 'image' | 'fill' | 'font'
+type TemplateNode = NovaSfcTemplateNode
+type TemplateSlotNode = NovaSfcTemplateSlotNode
+type GenerateContext = NovaSfcGenerateContext
 
-interface NovaAutoAssetRecord {
+export type NovaAutoAssetKind = 'icon' | 'image' | 'fill' | 'font'
+
+export interface NovaAutoAssetRecord {
   key: string
   name: string
   kind: NovaAutoAssetKind
@@ -133,7 +182,7 @@ interface NovaAutoAssetRecord {
   descriptor: string
 }
 
-interface NovaAutoAssetRegistry {
+export interface NovaAutoAssetRegistry {
   records: Map<string, NovaAutoAssetRecord>
   refsByKey: Map<string, string>
   importRefs: Map<string, string>
@@ -299,7 +348,6 @@ const UI_KIT_SEMANTIC_EVENT_PROPS = new Map([
 
 const PRIMITIVE_TAGS = new Set(['rect', 'border', 'line', 'circle', 'polygon', 'text', 'icon'])
 const TIMELINE_PROFILE_MARKER_TAGS = new Set([
-  'TimelineTaskProfile',
   'TimelineChart.BackgroundProfile',
   'TimelineChart.PointProfile',
   'TimelineChart.LinkProfile',
@@ -349,12 +397,6 @@ export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Panel: 'packages/@endge-nova-ui-kit/src/components/Panel/Panel.ts',
 }
 
-export interface TimelineTaskProfilesCompileResult {
-  code: string
-  diagnostics: Array<NovaUiStyleDiagnostic>
-  dependencies: Array<string>
-}
-
 export interface TimelineGroupColumnTemplatesCompileResult {
   code: string
   diagnostics: Array<NovaUiStyleDiagnostic>
@@ -362,46 +404,11 @@ export interface TimelineGroupColumnTemplatesCompileResult {
 }
 
 /**
- * Компилирует декларативные TimelineTaskProfile nodes в plain TimelineTaskProfilesOptions fragment.
- */
-export function compileTimelineTaskProfilesSource(
-  source: string,
-  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport'> = {},
-): TimelineTaskProfilesCompileResult {
-  const diagnostics: Array<NovaUiStyleDiagnostic> = []
-  const dependencies = new Set<string>()
-  const nodes = parseTemplate(source, diagnostics, 0, {
-    filename: options.filename,
-    resolveImport: options.resolveImport,
-    dependencies,
-  })
-  validateTimelineTaskProfileNodes(nodes, diagnostics)
-
-  const context: GenerateContext = {
-    diagnostics,
-    importedRuntimeSymbols: new Set(),
-    generatedImports: [],
-    componentImports: new Map(),
-    hasScopedStyles: false,
-    assets: createNovaAutoAssetRegistry(),
-    filename: options.filename,
-    resolveImport: options.resolveImport,
-    dependencies,
-  }
-
-  return {
-    code: generateTimelineTaskProfiles(nodes, context),
-    diagnostics,
-    dependencies: [...dependencies],
-  }
-}
-
-/**
  * Компилирует декларативные TimelineChart.GroupColumn nodes в schema factories.
  */
 export function compileTimelineGroupColumnTemplatesSource(
   source: string,
-  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport'> = {},
+  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport' | 'extensions'> = {},
 ): TimelineGroupColumnTemplatesCompileResult {
   const diagnostics: Array<NovaUiStyleDiagnostic> = []
   const dependencies = new Set<string>()
@@ -423,6 +430,7 @@ export function compileTimelineGroupColumnTemplatesSource(
     filename: options.filename,
     resolveImport: options.resolveImport,
     dependencies,
+    extensions: options.extensions ?? [],
   }
 
   return {
@@ -482,6 +490,7 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
   validateTemplateNodes(templateNodes, diagnostics, {
     importedRuntimeSymbols: setup.importedRuntimeSymbols,
     hasScopedStyles: styles.hasScopedStyles,
+    extensions: options.extensions ?? [],
   })
 
   const context: GenerateContext = {
@@ -494,6 +503,7 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     filename,
     resolveImport: options.resolveImport,
     dependencies,
+    extensions: options.extensions ?? [],
   }
   registerScriptAssetImports(setup.assetImports, context)
   registerAssetDeclarations(templateNodes, context)
@@ -722,6 +732,48 @@ function parseTemplate(
 ): Array<TemplateNode> {
   const root = baseParse(source)
   return root.children.flatMap(child => convertTemplateChild(child, diagnostics, baseOffset, options)).filter(Boolean)
+}
+
+/**
+ * Разбирает Nova template fragment для внешних compiler extensions.
+ */
+export function parseNovaTemplateSource(
+  source: string,
+  diagnostics: Array<NovaUiStyleDiagnostic>,
+  options: Pick<NovaSfcCompileOptions, 'filename' | 'resolveImport' | 'extensions'> & {
+    baseOffset?: number
+    dependencies?: Set<string>
+  } = {},
+): Array<NovaSfcTemplateNode> {
+  return parseTemplate(source, diagnostics, options.baseOffset ?? 0, {
+    filename: options.filename,
+    resolveImport: options.resolveImport,
+    dependencies: options.dependencies,
+  })
+}
+
+/**
+ * Создает codegen context для внешних compiler extensions.
+ */
+export function createNovaSfcGenerateContext(input: {
+  diagnostics: Array<NovaUiStyleDiagnostic>
+  filename?: string
+  resolveImport?: NovaCssCompileOptions['resolveImport']
+  dependencies?: Set<string>
+  extensions?: Array<NovaCompilerExtension>
+}): NovaSfcGenerateContext {
+  return {
+    diagnostics: input.diagnostics,
+    importedRuntimeSymbols: new Set(),
+    generatedImports: [],
+    componentImports: new Map(),
+    hasScopedStyles: false,
+    assets: createNovaAutoAssetRegistry(),
+    filename: input.filename,
+    resolveImport: input.resolveImport,
+    dependencies: input.dependencies,
+    extensions: input.extensions ?? [],
+  }
 }
 
 function parseTemplateFragment(
@@ -1462,7 +1514,7 @@ function collectElementAttrs(
       ? directive.exp.content
       : ''
 
-    if (directive.name === 'slot' && element.tag === 'TimelineTaskProfile') {
+    if (directive.name === 'slot') {
       continue
     }
 
@@ -2122,7 +2174,7 @@ function registerLocalAssetRef(context: GenerateContext, id: string, kind: NovaA
 function validateTemplateNodes(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
-  options: { importedRuntimeSymbols: Set<string>; hasScopedStyles: boolean },
+  options: { importedRuntimeSymbols: Set<string>; hasScopedStyles: boolean; extensions: Array<NovaCompilerExtension> },
 ): void {
   if (options.hasScopedStyles && (nodes.length !== 1 || nodes[0]?.tag !== 'Root')) {
     diagnostics.push({
@@ -2138,7 +2190,7 @@ function validateTemplateNodes(
 function validateTemplateNodeList(
   nodes: Array<TemplateNode>,
   diagnostics: Array<NovaUiStyleDiagnostic>,
-  options: { importedRuntimeSymbols: Set<string> },
+  options: { importedRuntimeSymbols: Set<string>; extensions: Array<NovaCompilerExtension> },
 ): void {
   let previousAcceptsElse = false
 
@@ -2147,6 +2199,13 @@ function validateTemplateNodeList(
     const isImportedComponent = options.importedRuntimeSymbols.has(node.tag)
     const staticSrc = readAttr(node, 'src')
     const isSlotOutlet = node.tag === 'slot'
+    const isExtensionNode = options.extensions.some(extension => extension.sfc?.isKnownNode?.({
+      node,
+      context: createNovaSfcGenerateContext({
+        diagnostics,
+        extensions: options.extensions,
+      }),
+    }) === true)
 
     if (!isSlotOutlet
       && !UI_KIT_TAGS.has(node.tag)
@@ -2160,6 +2219,7 @@ function validateTemplateNodeList(
       && node.tag !== TIMELINE_MARQUEE_SELECTION_TAG
       && !isAssetDeclarationTag(node.tag)
       && !isAssetsContainerTag(node.tag)
+      && !isExtensionNode
       && node.tag !== 'template'
       && !node.tag.includes('.')
       && !isComponentInclude
@@ -2354,13 +2414,11 @@ function generateSchema(
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isTimelineMarqueeSelectionNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
+    ? node.children.filter(child => !isExtensionChildMarker(node, child, context) && !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isTimelineMarqueeSelectionNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
     : isTimelineGroupsPanelTag(node)
       ? node.children.filter(child => !isTimelineGroupsPanelTemplateChild(child))
       : node.children
-  const timelineTaskProfiles = isTimelineRootTag(node)
-    ? generateTimelineTaskProfilesProp(node.children, context)
-    : ''
+  const extensionProps = generateExtensionNodeProps(node, context)
   const timelineVisualProfiles = isTimelineRootTag(node)
     ? generateTimelineVisualProfilesProp(node.children)
     : ''
@@ -2386,7 +2444,7 @@ function generateSchema(
     ? generateTimelineMarqueeSelectionProp(node.children, context)
     : ''
   const props = [
-    timelineTaskProfiles,
+    ...extensionProps,
     timelineVisualProfiles,
     timelineGroupColumns,
     timelineGroupColumnTemplates,
@@ -2520,12 +2578,6 @@ function isTimelineRootTag(node: TemplateNode): boolean {
   return node.tag === 'TimelineChart.Root'
 }
 
-function generateTimelineTaskProfilesProp(nodes: Array<TemplateNode>, context: GenerateContext): string {
-  const profileNodes = nodes.filter(node => node.tag === 'TimelineTaskProfile')
-  if (profileNodes.length === 0) return ''
-  return `taskProfiles:${generateTimelineTaskProfiles(profileNodes, context)}`
-}
-
 function generateTimelineVisualProfilesProp(nodes: Array<TemplateNode>): string {
   const pointProfiles = nodes.filter(node => node.tag === 'TimelineChart.PointProfile')
   const linkProfiles = nodes.filter(node => node.tag === 'TimelineChart.LinkProfile')
@@ -2589,9 +2641,23 @@ function mergePropsCode(base: string, extra: string): string {
   return `${base.slice(0, -1)},${extra}}`
 }
 
+function generateExtensionNodeProps(node: TemplateNode, context: GenerateContext): Array<string> {
+  const props: Array<string> = []
+  for (const extension of context.extensions) {
+    const value = extension.sfc?.generateNodeProps?.({ node, context })
+    if (!value) continue
+    if (Array.isArray(value)) props.push(...value.filter(Boolean))
+    else props.push(value)
+  }
+  return props
+}
+
+function isExtensionChildMarker(parent: TemplateNode, child: TemplateNode, context: GenerateContext): boolean {
+  return context.extensions.some(extension => extension.sfc?.isNodeChildMarker?.({ parent, child, context }) === true)
+}
+
 function isTimelineProfileNode(node: TemplateNode): boolean {
-  return node.tag === 'TimelineTaskProfile'
-    || node.tag === 'TimelineChart.BackgroundProfile'
+  return node.tag === 'TimelineChart.BackgroundProfile'
     || node.tag === 'TimelineChart.PointProfile'
     || node.tag === 'TimelineChart.LinkProfile'
 }
@@ -3678,102 +3744,18 @@ function readAnyStaticTimelineAttr(node: TemplateNode, names: Array<string>): st
   return undefined
 }
 
-function validateTimelineTaskProfileNodes(
-  nodes: Array<TemplateNode>,
-  diagnostics: Array<NovaUiStyleDiagnostic>,
-): void {
-  for (const node of nodes) {
-    if (node.tag !== 'TimelineTaskProfile') {
-      diagnostics.push({
-        severity: 'error',
-        code: 'timeline-profile-root',
-        message: 'Timeline profile DSL поддерживает только top-level <TimelineTaskProfile>.',
-      })
-      continue
-    }
-
-    if (!readAttr(node, 'name')) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'timeline-profile-name',
-        message: '<TimelineTaskProfile> требует статический name.',
-      })
-    }
-
-    if (Object.keys(node.slots).some(name => name !== 'default')) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'timeline-profile-slot',
-        message: 'TimelineTaskProfile поддерживает только default slot для внешнего template body.',
-      })
-    }
-
-    validateTimelineTaskProfileChildren(resolveTimelineTaskProfileChildren(node), diagnostics)
-  }
-}
-
-function validateTimelineTaskProfileChildren(
-  nodes: Array<TemplateNode>,
-  diagnostics: Array<NovaUiStyleDiagnostic>,
-): void {
-  for (const node of nodes) {
-    if (!TIMELINE_PROFILE_PRIMITIVE_TAGS.has(node.tag)) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'timeline-profile-unsupported-node',
-        message: `TimelineTaskProfile пока поддерживает только Rect, Icon, Text и TextBlock. Получен <${node.tag}>.`,
-      })
-      continue
-    }
-    validateTimelineTaskProfileChildren(node.children, diagnostics)
-  }
-}
-
-function generateTimelineTaskProfiles(nodes: Array<TemplateNode>, context: GenerateContext): string {
-  const entries = nodes
-    .filter(node => node.tag === 'TimelineTaskProfile')
-    .map(node => {
-      const name = readAttr(node, 'name') ?? 'default'
-      const contract = readAttr(node, ':contract')
-        ? `,contract:${readAttr(node, ':contract')}`
-        : readAttr(node, 'contract')
-          ? `,contract:${serializeStaticAttr(readAttr(node, 'contract')!)}`
-          : ''
-      const selectionHighlight = readAttr(node, ':selection-highlight')
-        ? `,selectionHighlight:${readAttr(node, ':selection-highlight')}`
-        : readAttr(node, ':selectionHighlight')
-          ? `,selectionHighlight:${readAttr(node, ':selectionHighlight')}`
-          : readAttr(node, 'selection-highlight')
-            ? `,selectionHighlight:${serializeStaticAttr(readAttr(node, 'selection-highlight')!)}`
-            : readAttr(node, 'selectionHighlight')
-              ? `,selectionHighlight:${serializeStaticAttr(readAttr(node, 'selectionHighlight')!)}`
-              : ''
-
-      return `${quoteKey(name)}:{
-        schema:(__timelineTask) => {
-          const runtimeTask = __timelineTask;
-          const task = runtimeTask.item;
-          const group = runtimeTask.group?.item ?? null;
-          const width = runtimeTask.width;
-          const height = runtimeTask.height;
-          const x = runtimeTask.x;
-          const y = runtimeTask.y;
-          const selected = runtimeTask.isSelected;
-          const ctx = runtimeTask;
-          return ${generateTimelineProfileNodeSequence(resolveTimelineTaskProfileChildren(node), context)};
-        }${contract}${selectionHighlight}
-      }`
-    })
-
-  return `{defaultProfileId:'default',profiles:{${entries.join(',')}}}`
-}
-
-function resolveTimelineTaskProfileChildren(node: TemplateNode): Array<TemplateNode> {
-  return node.children.length > 0 ? node.children : node.slots.default?.children ?? []
-}
-
 function generateTimelineProfileNodeSequence(nodes: Array<TemplateNode>, context: GenerateContext): string {
   return `[${nodes.map(node => generateTimelineProfileNode(node, context)).join(',')}].flat().filter(Boolean)`
+}
+
+/**
+ * Генерирует sequence из простых profile primitives для внешних DSL extensions.
+ */
+export function generateNovaProfilePrimitiveNodeSequence(
+  nodes: Array<NovaSfcTemplateNode>,
+  context: NovaSfcGenerateContext,
+): string {
+  return generateTimelineProfileNodeSequence(nodes, context)
 }
 
 function generateTimelineProfileNode(node: TemplateNode, context: GenerateContext): string {
@@ -3796,7 +3778,7 @@ function generateTimelineProfileSchema(node: TemplateNode, context: GenerateCont
   context.diagnostics.push({
     severity: 'error',
     code: 'timeline-profile-unsupported-node',
-    message: `TimelineTaskProfile пока поддерживает только Rect, Icon, Text и TextBlock. Получен <${node.tag}>.`,
+    message: `Profile primitive schema поддерживает только Rect, Icon, Text и TextBlock. Получен <${node.tag}>.`,
   })
   return 'null'
 }
@@ -4277,6 +4259,13 @@ function readAttr(node: TemplateNode, name: string): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+/**
+ * Читает строковый атрибут Nova template node для compiler extensions.
+ */
+export function readNovaTemplateAttr(node: NovaSfcTemplateNode, name: string): string | undefined {
+  return readAttr(node, name)
+}
+
 function parseForExpression(source: string): { item: string; index: string; source: string } | null {
   const match = source.match(/^\s*(?:\(([^,\s]+)\s*,\s*([^)]+)\)|([^\s]+))\s+(?:in|of)\s+(.+)\s*$/)
   if (!match) return null
@@ -4377,8 +4366,22 @@ function serializeStaticAttr(value: string | true): string {
   return JSON.stringify(value)
 }
 
+/**
+ * Сериализует статический template attr в JS expression.
+ */
+export function serializeNovaStaticAttr(value: string | true): string {
+  return serializeStaticAttr(value)
+}
+
 function quoteKey(key: string): string {
   return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)
+}
+
+/**
+ * Возвращает безопасный object key для generated code.
+ */
+export function quoteNovaObjectKey(key: string): string {
+  return quoteKey(key)
 }
 
 function escapeRegExp(value: string): string {

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   compileNovaSfc,
   compileTimelineGroupColumnTemplatesSource,
-  compileTimelineTaskProfilesSource,
 } from '@/sfc/nova-sfc-compiler'
+import { compileTimelineTaskProfilesSource, timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
 
 describe('Nova SFC compiler', () => {
   it('generates a NovaNode class with setup, keyed loop and scoped style asset', () => {
@@ -508,6 +508,7 @@ describe('Nova SFC compiler', () => {
       </template>
     `, {
       filename: '/demo/App.nova',
+      extensions: [timelineChartNovaCompilerExtension()],
     })
 
     expect(result.diagnostics.map(item => item.code)).toEqual(expect.arrayContaining([
@@ -577,6 +578,7 @@ describe('Nova SFC compiler', () => {
       </template>
     `, {
       filename: '/demo/App.nova',
+      extensions: [timelineChartNovaCompilerExtension()],
     })
 
     expect(result.diagnostics).toHaveLength(0)

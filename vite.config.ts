@@ -32,6 +32,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@endge/nova-compiler': path.resolve(__dirname, './src/index.ts'),
     },
   },
   test: {

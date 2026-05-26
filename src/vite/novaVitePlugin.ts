@@ -7,7 +7,7 @@ import { compileNovaCss, generateNovaCssModule, serializeStyleAsset } from '../c
 import {
   compileNovaSfc,
   compileTimelineGroupColumnTemplatesSource,
-  compileTimelineTaskProfilesSource,
+  type NovaCompilerExtension,
 } from '../sfc/nova-sfc-compiler'
 
 export interface NovaGeneratedOutputOptions {
@@ -19,6 +19,7 @@ export interface NovaVitePluginOptions {
   includeDiagnostics?: boolean
   generatedOutput?: NovaGeneratedOutputOptions
   sourceRoot?: string
+  extensions?: Array<NovaCompilerExtension>
 }
 
 interface VirtualNovaModule {
@@ -26,6 +27,7 @@ interface VirtualNovaModule {
   filename: string
   ownerFile: string
   versionedId?: string
+  extensions?: Array<NovaCompilerExtension>
 }
 
 interface ParsedAttr {
@@ -85,7 +87,14 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
     load(id) {
       const virtualModule = virtualModules.get(stripViteQuery(id))
       if (!virtualModule) return null
-      return compileNovaModule(virtualModule.source, virtualModule.filename, this, options, generatedOutput, sourceRoot)
+      return compileNovaModule(
+        virtualModule.source,
+        virtualModule.filename,
+        this,
+        { ...options, extensions: virtualModule.extensions ?? options.extensions },
+        generatedOutput,
+        sourceRoot,
+      )
     },
 
     /**
@@ -154,6 +163,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           options.includeDiagnostics ?? true,
           sourceRoot,
           novaStyles.scopedStyles,
+          options.extensions ?? [],
         )
         if (timelineProfiles) {
           transformed = timelineProfiles
@@ -168,6 +178,7 @@ export function novaVitePlugin(options: NovaVitePluginOptions = {}): Plugin {
           options.includeDiagnostics ?? true,
           sourceRoot,
           novaStyles.scopedStyles,
+          options.extensions ?? [],
         )
         if (novaCanvas) {
           transformed = novaCanvas
@@ -211,6 +222,7 @@ function compileNovaModule(
   const result = compileNovaSfc(source, {
     filename: id,
     resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
+    extensions: options.extensions,
   })
   emitDiagnostics(id, result.diagnostics, options.includeDiagnostics ?? true)
   throwOnErrors(result.diagnostics)
@@ -226,6 +238,7 @@ function transformVueNovaCanvasTemplates(
   includeDiagnostics: boolean,
   sourceRoot: string,
   novaStyleBlocks: Array<string> = [],
+  extensions: Array<NovaCompilerExtension> = [],
 ): string | null {
   if (!hasVueNovaCanvasSource(source)) return null
 
@@ -335,6 +348,7 @@ function transformVueNovaCanvasTemplates(
       filename: `${stripViteQuery(id)}__nova_template_${index}.nova`,
       source: inlineSource,
       ownerFile: stripViteQuery(id),
+      extensions,
     })
 
     const importModuleSource = withVirtualVersion(importSource, virtualVersionSource)
@@ -376,6 +390,7 @@ function transformVueTimelineChartProfiles(
   includeDiagnostics: boolean,
   sourceRoot: string,
   novaStyleBlocks: Array<string> = [],
+  extensions: Array<NovaCompilerExtension> = [],
 ): string | null {
   if (!hasVueTimelineChartProfileSource(source)) return null
 
@@ -396,31 +411,40 @@ function transformVueTimelineChartProfiles(
   walkVueTemplateElements(ast, node => {
     if (node.tag !== 'TimelineChart') return
     const children = Array.isArray(node.children) ? node.children : []
+    const childTransforms = resolveVueComponentChildTransforms(extensions, node.tag)
+    const extensionChildren = children.filter((child: any) => isVueExtensionChildNode(child, childTransforms))
 
-    const profileChildren = children.filter((child: any) => isTimelineTaskProfileVueNode(child))
     const groupTemplateChildren = children.filter((child: any) => isTimelineGroupTemplateVueNode(child, cleanId, context, sourceRoot))
     const rootChildren = children.filter((child: any) => (
-      !isTimelineTaskProfileVueNode(child)
+      !isVueExtensionChildNode(child, childTransforms)
       && !isTimelineGroupTemplateVueNode(child, cleanId, context, sourceRoot)
       && !isEmptyTextNode(child)
     ))
     const shouldInjectStyleSheet = novaStyleBlocks.length > 0 && !hasVueStyleSheetProp(node)
-    if (profileChildren.length === 0 && groupTemplateChildren.length === 0 && rootChildren.length === 0 && !shouldInjectStyleSheet) return
+    if (extensionChildren.length === 0 && groupTemplateChildren.length === 0 && rootChildren.length === 0 && !shouldInjectStyleSheet) return
 
-    let profilesProp = ''
-    if (profileChildren.length > 0) {
-      const profilesSource = profileChildren.map((child: any) => child.loc.source).join('\n')
-      const result = compileTimelineTaskProfilesSource(profilesSource, {
+    let extensionProps = ''
+    for (const transform of childTransforms) {
+      const transformChildren = children.filter((child: any) => isVueExtensionChildNode(child, [transform]))
+      if (transformChildren.length === 0) continue
+
+      const source = transformChildren.map((child: any) => child.loc.source).join('\n')
+      const result = transform.compile(source, {
         filename: id,
         resolveImport: (request, from) => resolveSourceImport(request, from, context, sourceRoot),
+        extensions,
       })
       for (const dependency of result.dependencies) context.addWatchFile(dependency)
       emitDiagnostics(id, result.diagnostics, includeDiagnostics)
       throwOnErrors(result.diagnostics)
 
-      const constName = `__timelineTaskProfiles${index}`
+      for (const statement of result.imports ?? []) {
+        if (!imports.includes(statement)) imports.push(statement)
+      }
+
+      const constName = `__${transform.constPrefix}${index}`
       declarations.push(`const ${constName} = ${result.code};`)
-      profilesProp = ` :compiled-task-profiles="${constName}"`
+      extensionProps += ` :${transform.compiledPropName}="${constName}"`
     }
 
     let rootChildrenProp = ''
@@ -434,6 +458,7 @@ function transformVueTimelineChartProfiles(
         filename: `${stripViteQuery(id)}__timeline_root_children_${index}.nova`,
         source: inlineSource,
         ownerFile: stripViteQuery(id),
+        extensions,
       })
       const importModuleSource = withVirtualVersion(importSource, inlineSource)
       virtualModules.get(importSource)!.versionedId = importModuleSource
@@ -484,7 +509,7 @@ function transformVueTimelineChartProfiles(
     const nodeSource = node.loc.source
     const openingEndInNode = nodeSource.indexOf('>') + 1
     const openingSource = openingEndInNode > 0 ? nodeSource.slice(0, openingEndInNode) : nodeSource
-    const injectedProps = `${profilesProp}${rootChildrenProp}${groupColumnTemplatesProp}${styleSheetProp}`
+    const injectedProps = `${extensionProps}${rootChildrenProp}${groupColumnTemplatesProp}${styleSheetProp}`
     const openingWithProfiles = openingSource.trimEnd().endsWith('/>')
       ? openingSource.replace(/\/>$/, `${injectedProps}>`)
       : openingSource.replace(/>$/, `${injectedProps}>`)
@@ -643,8 +668,20 @@ function hasVueStyleSheetProp(node: any): boolean {
   return false
 }
 
-function isTimelineTaskProfileVueNode(node: any): boolean {
-  return node.type === NodeTypes.ELEMENT && node.tag === 'TimelineTaskProfile'
+function resolveVueComponentChildTransforms(
+  extensions: Array<NovaCompilerExtension>,
+  componentTag: string,
+): NonNullable<NonNullable<NovaCompilerExtension['vue']>['componentChildTransforms']> {
+  return extensions
+    .flatMap(extension => extension.vue?.componentChildTransforms ?? [])
+    .filter(transform => transform.componentTag === componentTag)
+}
+
+function isVueExtensionChildNode(
+  node: any,
+  transforms: NonNullable<NonNullable<NovaCompilerExtension['vue']>['componentChildTransforms']>,
+): boolean {
+  return node.type === NodeTypes.ELEMENT && transforms.some(transform => transform.childTag === node.tag)
 }
 
 function isTimelineGroupTemplateVueNode(
