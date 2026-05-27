@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { compileTimelineTaskProfilesSource, timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
 import {
   compileNovaSfc,
   compileTimelineGroupColumnTemplatesSource,
 } from '@/sfc/nova-sfc-compiler'
-import { compileTimelineTaskProfilesSource, timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
 
 describe('Nova SFC compiler', () => {
   it('generates a NovaNode class with setup, keyed loop and scoped style asset', () => {
@@ -1020,6 +1020,7 @@ describe('Nova SFC compiler', () => {
           <TimelineChart.Markers
             :items="markers"
             :create="{ modifiers: ['alt', 'option'] }"
+            :closable="{ line: true, range: false, today: false }"
             :body-layer="{ anchor: 'chart.beforeTasks', clip: 'tasks' }"
             :label-layer="{ anchor: 'root.overlay', clip: 'root' }"
           >
@@ -1028,6 +1029,8 @@ describe('Nova SFC compiler', () => {
               kind="today"
               label="Сегодня"
               color="#1d73ff"
+              :closable="false"
+              :cover="{ positions: ['left', 'right'], background: 'rgba(29, 115, 255, 0.1)' }"
               :line="{ from: 'tasks.top', to: 'tasks.bottom' }"
               :label-placement="{ anchor: 'timescale.bottom', align: 'center', offsetY: 6 }"
             />
@@ -1040,9 +1043,12 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain('compiledMarkers:')
     expect(result.code).toContain('value:markers')
     expect(result.code).toContain('create:{ modifiers: [\'alt\', \'option\'] }')
+    expect(result.code).toContain('closable:{ line: true, range: false, today: false }')
     expect(result.code).toContain('bodyLayer:{ anchor: \'chart.beforeTasks\', clip: \'tasks\' }')
     expect(result.code).toContain('labelLayer:{ anchor: \'root.overlay\', clip: \'root\' }')
     expect(result.code).toContain('defaultValue:[{id:"today",kind:"today"')
+    expect(result.code).toContain('closable:false')
+    expect(result.code).toContain('cover:{ positions: [\'left\', \'right\'], background: \'rgba(29, 115, 255, 0.1)\' }')
     expect(result.code).toContain('line:{ from: \'tasks.top\', to: \'tasks.bottom\' }')
     expect(result.code).toContain('label:{ anchor: \'timescale.bottom\', align: \'center\', offsetY: 6 }')
   })

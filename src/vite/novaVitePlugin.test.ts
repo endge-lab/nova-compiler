@@ -781,6 +781,54 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(compiled).not.toContain('type:"TimelineTaskProfile"')
   })
 
+  it('compiles TimelineChart.Root named layout and partial slots', async () => {
+    const plugin = novaVitePlugin({ extensions: [timelineChartNovaCompilerExtension()] })
+
+    const result = await runTransform(
+      plugin,
+      `
+        <template>
+          <NovaCanvas>
+            <TimelineChart.Root>
+              <template #layout>
+                <Flex direction="column">
+                  <TimelineChart.TimeScale />
+                  <TimelineChart.TasksPanel />
+                </Flex>
+              </template>
+
+              <template #groups>
+                <TimelineChart.GroupColumn id="status">
+                  <template #cell="{ data, x, y, width, height }">
+                    <TextBlock :x="x" :y="y" :width="width" :height="height" :text="data" />
+                  </template>
+                </TimelineChart.GroupColumn>
+              </template>
+
+              <template #gridOverlay>
+                <TextBlock text="Overlay" />
+              </template>
+            </TimelineChart.Root>
+          </NovaCanvas>
+        </template>
+      `,
+      sourcePath('src/pages/TimelineRootSlots.vue'),
+    )
+
+    const code = (result as { code: string }).code
+    const virtualId = code.match(/from "(virtual:nova-template:[^"]+)"/)?.[1]
+    expect(virtualId).toBeTruthy()
+
+    const compiled = await runLoad(plugin, virtualId!)
+    expect(compiled).toContain('compiledGroupColumnTemplates:{')
+    expect(compiled).toContain('status:{')
+    expect(compiled).not.toContain('slots:{layout:')
+    expect(compiled).toContain('gridOverlay:')
+    expect(compiled).toContain('type:__NovaUIKit.Flex')
+    expect(compiled).toContain('type:"TimelineChart.TimeScale"')
+    expect(compiled).not.toContain('type:"TimelineChart.GroupColumn"')
+  })
+
   it('does not parse ordinary Vue templates without NovaCanvas', async () => {
     const plugin = novaVitePlugin()
 

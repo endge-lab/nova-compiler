@@ -2413,35 +2413,44 @@ function generateSchema(
 
   const type = resolveNodeTypeExpression(node, context)
   const isCompiledComponent = node.tag === 'Component' || context.importedRuntimeSymbols.has(node.tag)
+  const timelineRootTemplateNodes = isTimelineRootTag(node)
+    ? collectTimelineRootTemplateNodes(node)
+    : node.children
+  const timelineRootLayoutChildren = isTimelineRootTag(node)
+    ? node.slots.layout?.children ?? []
+    : []
   const childNodes = isTimelineRootTag(node)
-    ? node.children.filter(child => !isExtensionChildMarker(node, child, context) && !isTimelineProfileNode(child) && !isTimelineRootTemplateNode(child) && !isTimelineMarkerTemplateNode(child) && !isTimelineGridTemplateNode(child) && !isTimelineMarqueeSelectionNode(child) && !isAssetsContainerTag(child.tag) && !isAssetDeclarationTag(child.tag))
+    ? [
+        ...filterTimelineRootRuntimeChildren(node, node.children, context),
+        ...filterTimelineRootRuntimeChildren(node, timelineRootLayoutChildren, context),
+      ]
     : isTimelineGroupsPanelTag(node)
       ? node.children.filter(child => !isTimelineGroupsPanelTemplateChild(child))
       : node.children
   const extensionProps = generateExtensionNodeProps(node, context)
   const timelineVisualProfiles = isTimelineRootTag(node)
-    ? generateTimelineVisualProfilesProp(node.children)
+    ? generateTimelineVisualProfilesProp(timelineRootTemplateNodes)
     : ''
   const timelineGroupColumns = isTimelineRootTag(node)
-    ? generateTimelineGroupColumnsProp(node.children, context)
+    ? generateTimelineGroupColumnsProp(timelineRootTemplateNodes, context)
     : ''
   const timelineGroupColumnTemplates = isTimelineRootTag(node)
-    ? generateTimelineGroupColumnTemplatesProp(node.children, context)
+    ? generateTimelineGroupColumnTemplatesProp(timelineRootTemplateNodes, context)
     : ''
   const timelineGroupPanelTemplate = isTimelineRootTag(node)
-    ? generateTimelineGroupPanelTemplateProp(node.children, context)
+    ? generateTimelineGroupPanelTemplateProp(timelineRootTemplateNodes, context)
     : ''
   const timelineGroupPanelOverlayTemplate = isTimelineRootTag(node)
-    ? generateTimelineGroupPanelOverlayTemplateProp(node.children, context)
+    ? generateTimelineGroupPanelOverlayTemplateProp(timelineRootTemplateNodes, context)
     : ''
   const timelineMarkers = isTimelineRootTag(node)
-    ? generateTimelineMarkersProp(node.children, context)
+    ? generateTimelineMarkersProp(timelineRootTemplateNodes, context)
     : ''
   const timelineGridTemplate = isTimelineRootTag(node)
-    ? generateTimelineGridTemplateProp(node.children, context)
+    ? generateTimelineGridTemplateProp(timelineRootTemplateNodes, context)
     : ''
   const timelineMarqueeSelection = isTimelineRootTag(node)
-    ? generateTimelineMarqueeSelectionProp(node.children, context)
+    ? generateTimelineMarqueeSelectionProp(timelineRootTemplateNodes, context)
     : ''
   const props = [
     ...extensionProps,
@@ -2496,6 +2505,7 @@ function generateSlots(
 ): string {
   const entries: Array<[string, TemplateSlotNode]> = Object
     .entries(node.slots)
+    .filter(([name]) => !isTimelineRootTag(node) || name !== 'layout')
     .filter(([name]) => !isTimelineGroupsPanelTag(node) || (name !== 'background' && name !== 'overlay'))
   if (isCompiledComponent && node.children.length > 0 && !node.slots.default) {
     entries.push(['default', {
@@ -2506,12 +2516,15 @@ function generateSlots(
   if (entries.length === 0) return ''
 
   const slots = entries.map(([name, slot]) => {
+    const children = isTimelineRootTag(node)
+      ? filterTimelineRootRuntimeChildren(node, slot.children, context)
+      : slot.children
     const scopeDeclaration = slot.scope
       ? `const ${slot.scope} = __slotProps;`
       : ''
     return `${quoteKey(name)}:(__slotProps = {}) => {
 ${indent(scopeDeclaration, 6)}
-      return ${generateNodeSequence(slot.children, context)};
+      return ${generateNodeSequence(children, context)};
     }`
   })
 
@@ -2654,6 +2667,30 @@ function generateExtensionNodeProps(node: TemplateNode, context: GenerateContext
 
 function isExtensionChildMarker(parent: TemplateNode, child: TemplateNode, context: GenerateContext): boolean {
   return context.extensions.some(extension => extension.sfc?.isNodeChildMarker?.({ parent, child, context }) === true)
+}
+
+function collectTimelineRootTemplateNodes(node: TemplateNode): Array<TemplateNode> {
+  return [
+    ...node.children,
+    ...Object.values(node.slots).flatMap(slot => slot.children),
+  ]
+}
+
+function filterTimelineRootRuntimeChildren(
+  parent: TemplateNode,
+  nodes: Array<TemplateNode>,
+  context: GenerateContext,
+): Array<TemplateNode> {
+  return nodes.filter(child =>
+    !isExtensionChildMarker(parent, child, context)
+    && !isTimelineProfileNode(child)
+    && !isTimelineRootTemplateNode(child)
+    && !isTimelineMarkerTemplateNode(child)
+    && !isTimelineGridTemplateNode(child)
+    && !isTimelineMarqueeSelectionNode(child)
+    && !isAssetsContainerTag(child.tag)
+    && !isAssetDeclarationTag(child.tag),
+  )
 }
 
 function isTimelineProfileNode(node: TemplateNode): boolean {
@@ -3215,6 +3252,7 @@ function generateTimelineMarkersConfig(nodes: Array<TemplateNode>, context: Gene
       ['body-layer', 'bodyLayer'],
       ['labelLayer', 'labelLayer'],
       ['label-layer', 'labelLayer'],
+      ['closable', 'closable'],
     ] as const) {
       const value = readTimelineMarkerAttr(node, attr)
       if (value && !markerLevelProps.has(target)) {
@@ -3248,6 +3286,8 @@ function generateTimelineMarkerConfig(node: TemplateNode, context: GenerateConte
     timelineMarkerEntry(node, 'label'),
     timelineMarkerEntry(node, 'color'),
     timelineMarkerEntry(node, 'enabled'),
+    timelineMarkerEntry(node, 'closable'),
+    timelineMarkerEntry(node, 'cover'),
     timelineMarkerEntry(node, 'lineWidth') || timelineMarkerEntry(node, 'line-width', 'lineWidth'),
     generateTimelineMarkerPlacementEntry(node),
     generateTimelineMarkerSlotRenderer(node, context, 'default', 'renderMarker'),
