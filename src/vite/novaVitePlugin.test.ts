@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Plugin } from 'vite'
-import { novaVitePlugin } from '@/vite/novaVitePlugin'
+import { novaStandaloneApp, novaVitePlugin } from '@/vite/novaVitePlugin'
 import { timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
 
 const TEMP_DIRS: Array<string> = []
@@ -96,6 +96,73 @@ describe('Nova Vite plugin generated debug output', () => {
 
     const code = (result as { code: string }).code
     expect(code).toContain(`${iconPath}?raw`)
+  })
+
+  it('generates standalone Nova app entry without Vue imports', async () => {
+    const rootDir = createTempDir()
+    const sourceRoot = path.join(rootDir, 'src')
+    fs.mkdirSync(sourceRoot, { recursive: true })
+    fs.writeFileSync(path.join(sourceRoot, 'app.nova'), '<template><Root /></template>', 'utf8')
+
+    const plugin = getStandalonePlugin(novaStandaloneApp({
+      entry: 'src/app.nova',
+      options: {
+        renderer: { main: 'webgl' },
+        input: true,
+        size: { maxDpr: 2 },
+      },
+    }))
+    await runConfigResolved(plugin, rootDir)
+
+    const htmlTags = await runTransformIndexHtml(plugin)
+    const resolvedId = await runResolveId(plugin, 'virtual:nova-standalone-app-entry')
+    const code = await runLoad(plugin, resolvedId as string) as string
+
+    expect(htmlTags).toContain('/__nova_standalone_app_entry.js')
+    expect(code).toContain('import { Nova } from \'@endge/nova\';')
+    expect(code).toContain(`import __NovaStandaloneRoot from ${JSON.stringify(path.join(sourceRoot, 'app.nova'))}`)
+    expect(code).toContain('"maxDpr": 2')
+    expect(code).toContain('Nova.createApp(__novaStandaloneCreateOptions(size))')
+    expect(code).not.toContain('vue')
+    expect(code).not.toContain('@endge/nova-vue')
+  })
+
+  it('generates ProcessModeler registrar from imported namespace tag', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      [
+        '<script setup lang="ts">',
+        'import { ProcessModeler, createProcessModel } from "@endge/nova-process-modeler"',
+        'const model = createProcessModel({ id: "demo" })',
+        '</script>',
+        '<template><ProcessModeler.Root :model="model" /></template>',
+      ].join('\n'),
+      sourcePath('src/fixtures/ProcessModeler.nova'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('import { registerProcessModeler as __novaComponentRegistrar0 } from "@endge/nova-process-modeler";')
+    expect(code).toContain('import { createProcessModel } from "@endge/nova-process-modeler"')
+    expect(code).not.toContain('ProcessModeler, createProcessModel')
+    expect(code).toContain('__novaComponentRegistrar0(app.schema);')
+    expect(code).toContain('type:"ProcessModeler.Root"')
+  })
+
+  it('keeps imported UI Kit component and registers UI Kit schema', async () => {
+    const plugin = novaVitePlugin()
+
+    const result = await runTransform(
+      plugin,
+      '<script setup lang="ts">import { Button } from "@endge/nova-ui-kit"</script><template><Button label="Save" /></template>',
+      sourcePath('src/fixtures/Button.nova'),
+    )
+
+    const code = (result as { code: string }).code
+    expect(code).toContain('import { Button } from "@endge/nova-ui-kit"')
+    expect(code).toContain('registerNovaUIKit(app.schema);')
+    expect(code).toContain('type:Button')
   })
 
   it('transforms NovaCanvas default slot DSL into a virtual module import', async () => {
@@ -858,6 +925,15 @@ async function runTransform(plugin: Plugin, source: string, id: string): Promise
   return await transform?.handler.call(context as never, source, id)
 }
 
+async function runResolveId(plugin: Plugin, id: string): Promise<unknown> {
+  const resolveId = plugin.resolveId
+  if (typeof resolveId === 'function') {
+    return await resolveId.call({} as never, id, undefined, {} as never)
+  }
+
+  return await resolveId?.handler.call({} as never, id, undefined, {} as never)
+}
+
 async function runLoad(plugin: Plugin, id: string): Promise<unknown> {
   const load = plugin.load
   const context = {
@@ -872,6 +948,31 @@ async function runLoad(plugin: Plugin, id: string): Promise<unknown> {
   }
 
   return await load?.handler.call(context as never, id)
+}
+
+async function runConfigResolved(plugin: Plugin, root: string): Promise<void> {
+  const configResolved = plugin.configResolved
+  if (typeof configResolved === 'function') {
+    await configResolved.call({} as never, { root } as never)
+    return
+  }
+
+  await configResolved?.handler.call({} as never, { root } as never)
+}
+
+async function runTransformIndexHtml(plugin: Plugin): Promise<string> {
+  const transformIndexHtml = plugin.transformIndexHtml
+  const result = typeof transformIndexHtml === 'function'
+    ? await transformIndexHtml.call({} as never, '<html><body></body></html>', {} as never)
+    : await transformIndexHtml?.handler.call({} as never, '<html><body></body></html>', {} as never)
+
+  return JSON.stringify(result)
+}
+
+function getStandalonePlugin(plugins: Array<Plugin>): Plugin {
+  const plugin = plugins.find(item => item.name === 'endge-nova-standalone-app')
+  if (!plugin) throw new Error('Standalone plugin was not created')
+  return plugin
 }
 
 function createTempDir(): string {

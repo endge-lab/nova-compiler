@@ -140,6 +140,11 @@ interface ScriptSetupImportBinding {
   source: string
 }
 
+interface NovaComponentRegistrarBinding {
+  source: string
+  imported: string
+}
+
 interface NovaAssetImportBinding {
   local: string
   source: string
@@ -165,6 +170,8 @@ export interface NovaSfcGenerateContext {
   resolveImport?: NovaCssCompileOptions['resolveImport']
   dependencies?: Set<string>
   extensions: Array<NovaCompilerExtension>
+  componentRegistrars: Map<string, NovaComponentRegistrarBinding>
+  templateOnlyImportLocals: Set<string>
 }
 
 type TemplateNode = NovaSfcTemplateNode
@@ -364,6 +371,17 @@ const CORE_DSL_TAGS: Record<string, string> = {
   Scene: 'nova.scene',
 }
 
+const NOVA_COMPONENT_LIBRARY_REGISTRARS: Record<string, NovaComponentRegistrarBinding> = {
+  '@endge/nova-ui-kit': {
+    source: '@endge/nova-ui-kit',
+    imported: 'registerNovaUIKit',
+  },
+  '@endge/nova-process-modeler': {
+    source: '@endge/nova-process-modeler',
+    imported: 'registerProcessModeler',
+  },
+}
+
 export const NOVA_UI_KIT_DEFINITION_TARGETS: Record<string, string> = {
   Root: 'packages/@endge-nova-ui-kit/src/components/Root/Root.ts',
   Flex: 'packages/@endge-nova-ui-kit/src/components/Flex/Flex.ts',
@@ -431,6 +449,8 @@ export function compileTimelineGroupColumnTemplatesSource(
     resolveImport: options.resolveImport,
     dependencies,
     extensions: options.extensions ?? [],
+    componentRegistrars: new Map(),
+    templateOnlyImportLocals: new Set(),
   }
 
   return {
@@ -504,7 +524,10 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
     resolveImport: options.resolveImport,
     dependencies,
     extensions: options.extensions ?? [],
+    componentRegistrars: new Map(),
+    templateOnlyImportLocals: new Set(),
   }
+  collectNovaComponentRegistrars(templateNodes, setup, context)
   registerScriptAssetImports(setup.assetImports, context)
   registerAssetDeclarations(templateNodes, context)
   const templateCode = generateNodeSequence(templateNodes, context)
@@ -523,6 +546,8 @@ export function compileNovaSfc(source: string, options: NovaSfcCompileOptions = 
       autoAssetBundleCode: generateAutoAssetBundleCode(context.assets),
       assetBundleExpressions: context.assets.bundleExpressions,
       schemaComponentLocals,
+      componentRegistrars: context.componentRegistrars,
+      templateOnlyImportLocals: context.templateOnlyImportLocals,
     }),
     diagnostics,
     scopeId,
@@ -773,6 +798,8 @@ export function createNovaSfcGenerateContext(input: {
     resolveImport: input.resolveImport,
     dependencies: input.dependencies,
     extensions: input.extensions ?? [],
+    componentRegistrars: new Map(),
+    templateOnlyImportLocals: new Set(),
   }
 }
 
@@ -4049,6 +4076,8 @@ function resolveNodeTypeExpression(node: TemplateNode, context: GenerateContext)
     return resolveComponentImport(src, context)
   }
 
+  const namespace = resolveNamespacedTagRoot(node.tag)
+  if (namespace && context.templateOnlyImportLocals.has(namespace)) return JSON.stringify(node.tag)
   if (context.importedRuntimeSymbols.has(node.tag)) return node.tag
   if (CORE_DSL_TAGS[node.tag]) return JSON.stringify(CORE_DSL_TAGS[node.tag])
   if (UI_KIT_TAGS.has(node.tag)) return `__NovaUIKit.${node.tag}`
@@ -4399,6 +4428,52 @@ function resolveTemplateNodeTarget(node: TemplateNode, setup: ScriptSetupCompile
   }
 }
 
+function collectNovaComponentRegistrars(
+  nodes: Array<TemplateNode>,
+  setup: ScriptSetupCompileResult,
+  context: GenerateContext,
+): void {
+  for (const node of nodes) {
+    const namespace = resolveNamespacedTagRoot(node.tag)
+    const binding = namespace
+      ? setup.importBindings.get(namespace)
+      : setup.importBindings.get(node.tag)
+
+    if (binding) {
+      registerNovaComponentLibrary(binding, setup, context, namespace !== null)
+    }
+
+    collectNovaComponentRegistrars(node.children, setup, context)
+    for (const slot of Object.values(node.slots)) {
+      collectNovaComponentRegistrars(slot.children, setup, context)
+    }
+  }
+}
+
+function registerNovaComponentLibrary(
+  binding: ScriptSetupImportBinding,
+  setup: ScriptSetupCompileResult,
+  context: GenerateContext,
+  namespaced: boolean,
+): void {
+  const registrar = NOVA_COMPONENT_LIBRARY_REGISTRARS[binding.source]
+  if (!registrar) return
+
+  context.componentRegistrars.set(`${registrar.source}:${registrar.imported}`, registrar)
+  if (namespaced && !setupBodyReferencesImport(setup.body, binding.local)) {
+    context.templateOnlyImportLocals.add(binding.local)
+  }
+}
+
+function resolveNamespacedTagRoot(tag: string): string | null {
+  const dotIndex = tag.indexOf('.')
+  return dotIndex > 0 ? tag.slice(0, dotIndex) : null
+}
+
+function setupBodyReferencesImport(body: string, local: string): boolean {
+  return new RegExp(`\\b${escapeRegExp(local)}\\b`).test(body)
+}
+
 function serializeStaticAttr(value: string | true): string {
   if (value === true) return 'true'
   if (value === 'true' || value === 'false') return value
@@ -4428,16 +4503,80 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function filterRuntimeImports(imports: Array<string>, schemaComponentLocals?: Set<string>): Array<string> {
-  if (!schemaComponentLocals?.size) return imports
-  return imports.filter(source => {
+function filterRuntimeImports(
+  imports: Array<string>,
+  schemaComponentLocals?: Set<string>,
+  templateOnlyImportLocals?: Set<string>,
+): Array<string> {
+  const ignoredLocals = new Set([
+    ...(schemaComponentLocals ?? []),
+    ...(templateOnlyImportLocals ?? []),
+  ])
+  if (!ignoredLocals.size) return imports
+  const result: Array<string> = []
+  for (const source of imports) {
     const trimmed = source.trim()
-    for (const local of schemaComponentLocals) {
-      const pattern = new RegExp(`^import\\s+${escapeRegExp(local)}\\s+from\\s+['"]`)
-      if (pattern.test(trimmed)) return false
+    const parsed = parseRuntimeImportStatement(trimmed)
+    if (parsed && parsed.localNames.length > 0 && parsed.localNames.every(local => ignoredLocals.has(local))) continue
+
+    result.push(stripIgnoredNamedImports(source, ignoredLocals))
+  }
+  return result.filter(source => source.trim().length > 0)
+}
+
+function parseRuntimeImportStatement(source: string): { localNames: Array<string> } | null {
+  const match = source.match(/^import\s+(.+?)\s+from\s+['"]/s)
+  if (!match) return null
+
+  const specifierSource = match[1].trim()
+  const localNames: Array<string> = []
+  const defaultMatch = specifierSource.match(/^([A-Za-z_$][\w$]*)\s*(?:,|$)/)
+  if (defaultMatch && !specifierSource.startsWith('{') && !specifierSource.startsWith('*')) {
+    localNames.push(defaultMatch[1])
+  }
+
+  const namespaceMatch = specifierSource.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/)
+  if (namespaceMatch) localNames.push(namespaceMatch[1])
+
+  const namedMatch = specifierSource.match(/\{([\s\S]*)\}/)
+  if (namedMatch) {
+    for (const part of namedMatch[1].split(',')) {
+      const trimmed = part.trim()
+      if (!trimmed) continue
+
+      const alias = trimmed.match(/\bas\s+([A-Za-z_$][\w$]*)$/)
+      const plain = trimmed.match(/^([A-Za-z_$][\w$]*)$/)
+      const local = alias?.[1] ?? plain?.[1]
+      if (local) localNames.push(local)
     }
-    return true
-  })
+  }
+
+  return { localNames }
+}
+
+function stripIgnoredNamedImports(source: string, ignoredLocals: Set<string>): string {
+  const namedMatch = source.match(/\{([\s\S]*)\}/)
+  if (!namedMatch) return source
+
+  const kept = namedMatch[1].split(',')
+    .map(part => part.trim())
+    .filter(part => {
+      if (!part) return false
+      const alias = part.match(/\bas\s+([A-Za-z_$][\w$]*)$/)
+      const plain = part.match(/^([A-Za-z_$][\w$]*)$/)
+      const local = alias?.[1] ?? plain?.[1]
+      return !local || !ignoredLocals.has(local)
+    })
+
+  if (kept.length === 0) {
+    const hasDefaultOrNamespace = /^import\s+(?!\{)/.test(source.trim())
+      && /,\s*\{[\s\S]*\}/.test(source)
+    if (!hasDefaultOrNamespace) return ''
+  }
+
+  return source.slice(0, namedMatch.index)
+    + `{ ${kept.join(', ')} }`
+    + source.slice((namedMatch.index ?? 0) + namedMatch[0].length)
 }
 
 function generateModule(options: {
@@ -4453,8 +4592,10 @@ function generateModule(options: {
   autoAssetBundleCode: string
   assetBundleExpressions: Array<string>
   schemaComponentLocals?: Set<string>
+  componentRegistrars: Map<string, NovaComponentRegistrarBinding>
+  templateOnlyImportLocals: Set<string>
 }): string {
-  const setupImports = filterRuntimeImports(options.setup.imports, options.schemaComponentLocals)
+  const setupImports = filterRuntimeImports(options.setup.imports, options.schemaComponentLocals, options.templateOnlyImportLocals)
   const setupNames = new Set(options.setup.names)
   const topLevelNames = options.setup.topLevelNames
   const implicitTemplateLocals = [
@@ -4509,11 +4650,23 @@ ${indent(templateLocalDeclarations, 4)}
       if (bundle) this.nova.assets.unuse(bundle);
     }`
     : ''
+  const componentRegistrarImports: Array<string> = []
+  const componentRegistrarCalls = ['registerNovaUIKit(app.schema);']
+  let componentRegistrarIndex = 0
+  for (const registrar of options.componentRegistrars.values()) {
+    if (registrar.source === '@endge/nova-ui-kit' && registrar.imported === 'registerNovaUIKit') continue
+
+    const local = `__novaComponentRegistrar${componentRegistrarIndex}`
+    componentRegistrarImports.push(`import { ${registrar.imported} as ${local} } from ${JSON.stringify(registrar.source)};`)
+    componentRegistrarCalls.push(`${local}(app.schema);`)
+    componentRegistrarIndex += 1
+  }
 
   return `import { Nova as __NovaRuntime, NovaNode, NovaTemplateRuntime } from '@endge/nova';
 import { EMPTY_STYLE_CONTEXT, NOVA_UI_STYLE_TARGET, NovaUiStyleMask, NovaUIKit as __NovaUIKit, findNovaUiRoot, isNovaUiStyleTarget, mergeStyleReceiveResult, registerNovaUIKit, registerNovaUiGlobalStyleSheet } from '@endge/nova-ui-kit';
 ${setupImports.join('\n')}
 ${options.generatedImports.join('\n')}
+${componentRegistrarImports.join('\n')}
 
 const __novaSfcStyle = ${options.scopedStyleAssetCode};
 const __novaSfcGlobalStyle = ${options.globalStyleAssetCode};
@@ -4522,7 +4675,7 @@ ${options.autoAssetBundleCode}
 const __novaUiKitRegisteredApps = new WeakSet();
 const __ensureNovaUiKit = app => {
   if (__novaUiKitRegisteredApps.has(app)) return;
-  registerNovaUIKit(app.schema);
+${indent(componentRegistrarCalls.join('\n'), 2)}
   __novaUiKitRegisteredApps.add(app);
 };
 const __novaFor = source => {
@@ -4548,6 +4701,9 @@ export default class ${options.className} extends NovaNode {
     this.props = props;
     this.listeners = listeners;
     this.slots = slots;
+    this.__novaDslWatchers = [];
+    this.__novaDslCommandDisposers = [];
+    this.__novaDslApi = null;
     this.__novaAssetBundles = [];
     this.__novaGlobalStyleDisposers = [];
     this.__novaInheritedStyleContext = EMPTY_STYLE_CONTEXT;
@@ -4579,8 +4735,78 @@ ${refreshAssetBundlesMethod}
     const provide = (token, value) => this.provide(token, value);
     const inject = (token) => this.inject(token);
     const injectOptional = (token, fallback) => this.injectOptional(token, fallback);
+    const Prop = __NovaRuntime.Prop;
+    const watchProp = (path, options, handler) => this.__novaRegisterDslWatcher(path, options, handler);
+    const defineCommand = (id, handler, options = {}) => this.__novaDefineDslCommand(id, handler, options);
+    const defineApi = api => {
+      this.__novaDslApi = api;
+      return api;
+    };
 ${indent(options.setup.body, 4)}
     ${setupReturn}
+  }
+
+  __novaReadDslPath(path) {
+    const parts = String(path).split('.');
+    let current = this.props;
+    for (const part of parts) {
+      if (current == null || typeof current !== 'object') return undefined;
+      current = current[part];
+    }
+    return current;
+  }
+
+  __novaRegisterDslWatcher(path, options, handler) {
+    const normalized = typeof options === 'function'
+      ? { phase: 'update', handler: options }
+      : { ...(options ?? {}), handler };
+    const watcher = {
+      path,
+      phase: normalized.phase ?? 'update',
+      immediate: normalized.immediate === true,
+      handler: normalized.handler,
+      previous: this.__novaReadDslPath(path),
+      pending: false,
+      next: undefined,
+      prev: undefined,
+    };
+    this.__novaDslWatchers.push(watcher);
+    if (watcher.immediate && typeof watcher.handler === 'function') {
+      watcher.handler(watcher.previous, undefined, { path, changedPaths: [path], next: watcher.previous, prev: undefined });
+    }
+    return () => {
+      this.__novaDslWatchers = this.__novaDslWatchers.filter(item => item !== watcher);
+    };
+  }
+
+  __novaDefineDslCommand(id, handler, options = {}) {
+    const dispose = this.nova.commands.register(id, handler, { owner: this, scope: options.scope });
+    this.__novaDslCommandDisposers.push(dispose);
+    return dispose;
+  }
+
+  __novaCollectDslWatcherChanges(previous) {
+    for (const watcher of this.__novaDslWatchers) {
+      const prev = previous.get(watcher.path);
+      const next = this.__novaReadDslPath(watcher.path);
+      if (Object.is(prev, next)) continue;
+      watcher.pending = true;
+      watcher.prev = prev;
+      watcher.next = next;
+    }
+  }
+
+  __novaRunDslWatchers(phase) {
+    for (const watcher of this.__novaDslWatchers) {
+      if (!watcher.pending || watcher.phase !== phase || typeof watcher.handler !== 'function') continue;
+      watcher.pending = false;
+      watcher.previous = watcher.next;
+      watcher.handler(watcher.next, watcher.prev, { path: watcher.path, changedPaths: [watcher.path], next: watcher.next, prev: watcher.prev });
+    }
+  }
+
+  getApi() {
+    return this.__novaDslApi ?? this;
   }
 
   emit(name, ...args) {
@@ -4588,7 +4814,9 @@ ${indent(options.setup.body, 4)}
   }
 
   setProps(patch) {
+    const previous = new Map(this.__novaDslWatchers.map(watcher => [watcher.path, this.__novaReadDslPath(watcher.path)]));
     Object.assign(this.props, patch);
+    this.__novaCollectDslWatcherChanges(previous);
 ${indent(refreshAssetBundles, 4)}
     this.templateRuntime.setScope({ refs: this.props.novaRefs ?? {} });
     if ('x' in patch || 'y' in patch || 'width' in patch || 'height' in patch) {
@@ -4656,6 +4884,7 @@ ${indent(refreshAssetBundles, 4)}
   }
 
   update() {
+    this.__novaRunDslWatchers('update');
     __NovaRuntime.trackNode(this, () => {
       const result = this.templateRuntime.reconcile(this.createTemplate());
       if (result.created > 0 || result.removed > 0) this.__novaRefreshParentStyleCascade();
@@ -4663,7 +4892,9 @@ ${indent(refreshAssetBundles, 4)}
     });
   }
 
-  render() {}
+  render() {
+    this.__novaRunDslWatchers('render');
+  }
 
   getTemplateStats() {
     return this.templateRuntime.getStats();
@@ -4676,6 +4907,7 @@ ${indent(templateLocalDeclarations, 4)}
 
   dispose() {
     this.templateRuntime.dispose();
+    for (const dispose of this.__novaDslCommandDisposers.splice(0)) dispose();
 ${indent(unuseAssetBundles, 4)}
 ${indent(unuseAutoAssets, 4)}
     for (const dispose of this.__novaGlobalStyleDisposers.splice(0)) dispose();

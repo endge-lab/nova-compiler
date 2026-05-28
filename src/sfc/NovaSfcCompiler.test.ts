@@ -58,6 +58,30 @@ describe('Nova SFC compiler', () => {
     expect(result.diagnostics.some(item => item.code === 'unknown-tag')).toBe(true)
   })
 
+  it('exposes decorator-equivalent DSL helpers in compiled setup', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const props = defineProps()
+      watchProp('model.version', { phase: 'update' }, () => {})
+      defineCommand('demo.fit', () => 'ok')
+      defineApi({ read: () => props.model })
+      </script>
+
+      <template>
+        <Root />
+      </template>
+    `, {
+      filename: '/demo/NovaDsl.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('const Prop = __NovaRuntime.Prop')
+    expect(result.code).toContain('const watchProp = (path, options, handler)')
+    expect(result.code).toContain('const defineCommand = (id, handler, options = {})')
+    expect(result.code).toContain('const defineApi = api =>')
+    expect(result.code).toContain("__novaRunDslWatchers('update')")
+  })
+
   it('reports missing keys for dynamic lists and compiles branch chains', () => {
     const result = compileNovaSfc(`
       <template>
