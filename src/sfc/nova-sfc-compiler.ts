@@ -376,9 +376,9 @@ const NOVA_COMPONENT_LIBRARY_REGISTRARS: Record<string, NovaComponentRegistrarBi
     source: '@endge/nova-ui-kit',
     imported: 'registerNovaUIKit',
   },
-  '@endge/nova-process-modeler': {
-    source: '@endge/nova-process-modeler',
-    imported: 'registerProcessModeler',
+  '@endge/nova-modeler': {
+    source: '@endge/nova-modeler',
+    imported: 'registerNovaModeler',
   },
 }
 

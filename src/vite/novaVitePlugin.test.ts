@@ -127,27 +127,27 @@ describe('Nova Vite plugin generated debug output', () => {
     expect(code).not.toContain('@endge/nova-vue')
   })
 
-  it('generates ProcessModeler registrar from imported namespace tag', async () => {
+  it('generates NovaModeler registrar from imported namespace tag', async () => {
     const plugin = novaVitePlugin()
 
     const result = await runTransform(
       plugin,
       [
         '<script setup lang="ts">',
-        'import { ProcessModeler, createProcessModel } from "@endge/nova-process-modeler"',
+        'import { NovaModeler, createProcessModel } from "@endge/nova-modeler"',
         'const model = createProcessModel({ id: "demo" })',
         '</script>',
-        '<template><ProcessModeler.Root :model="model" /></template>',
+        '<template><NovaModeler.Root :model="model" /></template>',
       ].join('\n'),
-      sourcePath('src/fixtures/ProcessModeler.nova'),
+      sourcePath('src/fixtures/NovaModeler.nova'),
     )
 
     const code = (result as { code: string }).code
-    expect(code).toContain('import { registerProcessModeler as __novaComponentRegistrar0 } from "@endge/nova-process-modeler";')
-    expect(code).toContain('import { createProcessModel } from "@endge/nova-process-modeler"')
-    expect(code).not.toContain('ProcessModeler, createProcessModel')
+    expect(code).toContain('import { registerNovaModeler as __novaComponentRegistrar0 } from "@endge/nova-modeler";')
+    expect(code).toContain('import { createProcessModel } from "@endge/nova-modeler"')
+    expect(code).not.toContain('NovaModeler, createProcessModel')
     expect(code).toContain('__novaComponentRegistrar0(app.schema);')
-    expect(code).toContain('type:"ProcessModeler.Root"')
+    expect(code).toContain('type:"NovaModeler.Root"')
   })
 
   it('keeps imported UI Kit component and registers UI Kit schema', async () => {
