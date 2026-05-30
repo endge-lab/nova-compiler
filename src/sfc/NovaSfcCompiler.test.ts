@@ -102,6 +102,28 @@ describe('Nova SFC compiler', () => {
     expect(result.code).not.toContain('Nova.inject(')
   })
 
+  it('tracks named slot signal reads on the owner component', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const open = Nova.signal(false)
+      </script>
+
+      <template>
+        <Root>
+          <template #controls>
+            <Button :if="open.value" text="Open" />
+          </template>
+        </Root>
+      </template>
+    `, {
+      filename: '/demo/NovaSlotTracking.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain("{ mode: 'append' }")
+    expect(result.code).toContain('__NovaRuntime.trackNode(this, () => {')
+  })
+
   it('reports missing keys for dynamic lists and compiles branch chains', () => {
     const result = compileNovaSfc(`
       <template>

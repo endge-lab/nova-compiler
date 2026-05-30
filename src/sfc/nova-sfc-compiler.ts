@@ -2551,10 +2551,10 @@ function generateSlots(
     const scopeDeclaration = slot.scope
       ? `const ${slot.scope} = __slotProps;`
       : ''
-    return `${quoteKey(name)}:(__slotProps = {}) => {
+    return `${quoteKey(name)}:(__slotProps = {}) => __NovaRuntime.trackNode(this, () => {
 ${indent(scopeDeclaration, 6)}
       return ${generateNodeSequence(children, context)};
-    }`
+    }, { mode: 'append' })`
   })
 
   return `{${slots.join(',')}}`
