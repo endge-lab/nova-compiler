@@ -378,7 +378,7 @@ const NOVA_COMPONENT_LIBRARY_REGISTRARS: Record<string, NovaComponentRegistrarBi
   },
   '@endge/nova-modeler': {
     source: '@endge/nova-modeler',
-    imported: 'registerNovaModeler',
+    imported: 'registerModeler',
   },
 }
 
