@@ -735,6 +735,8 @@ function transformScriptSetupMacros(source: string): string {
     .replace(/defineProps\s*\([^)]*\)/g, '__props')
     .replace(/defineEmits\s*<[^>]+>\s*\(\s*\)/g, '__emit')
     .replace(/defineEmits\s*\([^)]*\)/g, '__emit')
+    .replace(/\bNova\.injectOptional\s*\(/g, 'injectOptional(')
+    .replace(/\bNova\.inject\s*\(/g, 'inject(')
 }
 
 function removeRanges(source: string, ranges: Array<[number, number]>): string {

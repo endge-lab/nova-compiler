@@ -82,6 +82,26 @@ describe('Nova SFC compiler', () => {
     expect(result.code).toContain("__novaRunDslWatchers('update')")
   })
 
+  it('rewrites Nova.inject DSL intrinsic to node inject helper', () => {
+    const result = compileNovaSfc(`
+      <script setup lang="ts">
+      const store = Nova.inject(MODELER_STORE)
+      const optional = Nova.injectOptional(MODELER_OPTIONAL_STORE)
+      </script>
+
+      <template>
+        <Root :data-store="store" :optional-store="optional" />
+      </template>
+    `, {
+      filename: '/demo/NovaInject.nova',
+    })
+
+    expect(result.diagnostics).toHaveLength(0)
+    expect(result.code).toContain('const store = inject(MODELER_STORE)')
+    expect(result.code).toContain('const optional = injectOptional(MODELER_OPTIONAL_STORE)')
+    expect(result.code).not.toContain('Nova.inject(')
+  })
+
   it('reports missing keys for dynamic lists and compiles branch chains', () => {
     const result = compileNovaSfc(`
       <template>
