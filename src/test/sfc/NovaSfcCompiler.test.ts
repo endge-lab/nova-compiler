@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileTimelineTaskProfilesSource, timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
+import { compileTimelineTaskProfilesSource, timelineChartNovaCompilerExtension } from '../../../../timeline-chart/src/compiler'
 import {
   compileNovaSfc,
   compileTimelineGroupColumnTemplatesSource,

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Plugin } from 'vite'
 import { novaStandaloneApp, novaVitePlugin } from '@/vite/novaVitePlugin'
-import { timelineChartNovaCompilerExtension } from '../../../timeline-chart/src/compiler'
+import { timelineChartNovaCompilerExtension } from '../../../../timeline-chart/src/compiler'
 
 const TEMP_DIRS: Array<string> = []
 
